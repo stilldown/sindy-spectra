@@ -72,7 +72,7 @@ def test_discovery_smoke_shapes():
 
 def test_compute_weak_operators_gradient_effect():
     # create simple synthetic data where psi has linear trend
-    from opera.discovery.operator import compute_weak_operators
+    from opera.discovery.operator import compute_weak_operators, construct_inverse_library
     rng = np.random.default_rng(0)
     N = 16
     d = 2
@@ -99,7 +99,8 @@ def test_compute_weak_operators_gradient_effect():
     # because psi increases, weighted values should differ from psi*original
     # approximate difference by recomputing simple weight for comparison
     lib_basic, *_ = construct_inverse_library(d_hat, d_d_c, d2_d_c, np.linspace(0,1,n_freq), factors, DiscoveryConfig())
-    basic_mat = psi[:,None] * lib_basic[name]
+    basic_name = name.replace("_weak", "_f")  # lib_basic has e.g. "L1_c1_f"
+    basic_mat = psi[:,None] * lib_basic[basic_name]
     assert not np.allclose(mat, basic_mat)
 
 

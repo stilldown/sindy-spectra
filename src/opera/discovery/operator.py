@@ -44,15 +44,19 @@ def construct_inverse_library(
     # operator 值的直接计算；与原有 L1/Xi2 结构类似，但未投影
     library: Dict[str, np.ndarray] = {}
 
-    # 0阶项
-    ln_f = np.real(np.log(d_hat + 1e-12))
-    g = -np.imag(np.log(d_hat + 1e-12)) / (omega + 1e-9)
+    # 0阶项 - 截断到 k_eff 使得所有算子具有一致的列数 (N_samples, k_eff)
+    d_hat_k = d_hat[:, :k_eff]
+    omega_k = omega[:k_eff]
+    ln_f = np.real(np.log(d_hat_k + 1e-12))
+    g = -np.imag(np.log(d_hat_k + 1e-12)) / (omega_k + 1e-9)
     library["ln_f"] = ln_f
     library["g"] = g
 
     # 计算一阶伪逆算子 L1_cj = D^\dagger (d/dc_j D)
+    # D_dag 形状为 (n_freq, n_samples)，d_d_c[:, j, :] 形状为 (n_samples, n_freq)
+    # 矩阵乘积：(n_freq, n_samples) @ (n_samples, n_freq) = (n_freq, n_freq)
     for j in range(n_controls):
-        term = D_dag @ d_d_c[:, j, :].T  # shape (n_freq,n_freq)
+        term = D_dag @ d_d_c[:, j, :]  # shape (n_freq, n_freq)
         # 这里只取对角线作为每个频率的响应
         diag = np.diag(term)[:k_eff]
         # 为兼容，重复成 (N,k_eff) 形状
@@ -63,19 +67,25 @@ def construct_inverse_library(
     # 二阶伪逆算子类似
     for i in range(n_controls):
         for j in range(n_controls):
-            term = D_dag @ d2_d_c[:, i, j, :].T
+            term = D_dag @ d2_d_c[:, i, j, :]  # shape (n_freq, n_freq)
             diag = np.diag(term)[:k_eff]
             lib_f = np.tile(np.real(diag), (n_samples, 1))
             lib_g = np.tile(-np.imag(diag) / (omega[:k_eff] + 1e-9), (n_samples, 1))
             library[f"Xi2_c{i+1}c{j+1}_f"] = lib_f
             library[f"Xi2_c{i+1}c{j+1}_g"] = lib_g
 
-    # 返回占位basis、A、omega_means
-    basis = d_hat.copy()  # placeholder
-    A = d_hat.copy()
+    # 计算 SVD 谱基（仅用于构造输出，不影响算子库的伪逆构造逻辑）
+    # 这使得 basis 形状与 construct_pure_library 一致，为 (k_eff, n_freq)
+    from scipy.linalg import svd as _svd
+    _, _, Vt = _svd(d_hat, full_matrices=False)
+    spectral_basis = Vt[:k_eff, :]              # (k_eff, n_freq)
+    A_proj = d_hat @ spectral_basis.conj().T    # (N, k_eff)
     omega_means = np.real(
-        np.diag(d_hat @ np.diag(omega) @ d_hat.conj().T)[:k_eff]
-    )
+        np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
+    )                                            # (k_eff,)
+
+    basis = spectral_basis
+    A = A_proj
 
     return library, basis, A, omega_means
 
@@ -165,16 +175,16 @@ def compute_weak_operators(
     # compute first-order weak operators and store basic L1 matrices
     L1_basic = []
     for j in range(n_controls):
-        raw1 = D_dag @ d_d_c[:, j, :].T
+        raw1 = D_dag @ d_d_c[:, j, :]  # shape (n_freq, n_freq)
         m = tile_diag(raw1)
         L1_basic.append(m)
-        # weak: psi*m - psi_grad_j * I_k
-        weak[f"L1_c{j+1}_weak"] = psi[:, None] * m - psi_grad[:, j, None] * np.eye(k_eff)
+        # weak: psi*m - psi_grad_j（分部积分修正，对每个频率分量减去标量梯度）
+        weak[f"L1_c{j+1}_weak"] = psi[:, None] * m - psi_grad[:, j, None] * np.ones((1, k_eff))
 
     # compute second-order and cross operators
     for i in range(n_controls):
         for j in range(n_controls):
-            raw2 = D_dag @ d2_d_c[:, i, j, :].T
+            raw2 = D_dag @ d2_d_c[:, i, j, :]  # shape (n_freq, n_freq)
             m2 = tile_diag(raw2)
             cross_term = L1_basic[i] * L1_basic[j]
             if i == j:
