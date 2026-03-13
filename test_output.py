@@ -19,4 +19,8 @@ with open('test_out.txt', 'w', encoding='utf-8') as f:
     f.write('C_real min: ' + str(np.min(np.abs(out.C_real), axis=0)) + '\n')
     for k in range(out.Xi.shape[1]):
         f.write(f'Comp {k+1} nnz: ' + str(np.sum(np.abs(out.A_matrix[:, k]) > 1e-4)) + '\n')
+<<<<<<< HEAD
 
+=======
+
+>>>>>>> 2d9cf06 (Initial commit)

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
     )
     phi_coeffs = np.zeros((k_eff, n_controls, 1 + n_controls), dtype=float)
     psi_coeffs = np.zeros((k_eff, n_controls, 1 + n_controls), dtype=float)
@@ -69,3 +70,76 @@
             "gamma_ap_t_error": gamma_diag.get("gamma_ap_t_error", 0.0),
             "gamma_linear_residual_mean": gamma_linear_diag["gamma_linear_residual_mean"],
             "gamma_linear_residual_max": gamma_linear_diag["gamma_linear_residual_max"],
+=======
+    )
+    phi_coeffs = np.zeros((k_eff, n_controls, 1 + n_controls), dtype=float)
+    psi_coeffs = np.zeros((k_eff, n_controls, 1 + n_controls), dtype=float)
+    for k in range(k_eff):
+        phi_coeffs[k] = fit_affine_field(c, phi_samples_k[k])
+        psi_coeffs[k] = fit_affine_field(c, psi_samples_k[k])
+
+    phi = np.zeros((k_eff, n_controls), dtype=float)
+    psi = np.zeros((k_eff, n_controls), dtype=float)
+    f_est = np.zeros((c.shape[0], k_eff), dtype=float)
+    g_est = np.zeros((c.shape[0], k_eff), dtype=float)
+
+    phi_cons_coeffs = np.zeros((k_eff, n_controls, 1 + n_controls), dtype=float)
+    psi_cons_coeffs = np.zeros((k_eff, n_controls, 1 + n_controls), dtype=float)
+    pde_residual_phi = []
+    pde_residual_psi = []
+
+    # 参考集聚合（所有零浓度样本�?
+    anchor_idx = anchor_idx.astype(int)
+
+    for k in range(k_eff):
+        phi_eval_raw = eval_affine_field(phi_coeffs[k], c)
+        psi_eval_raw = eval_affine_field(psi_coeffs[k], c)
+
+        b_phi, h_phi = affine_to_conservative(phi_coeffs[k])
+        b_psi, h_psi = affine_to_conservative(psi_coeffs[k])
+
+        phi_eval = eval_conservative_affine_field(b_phi, h_phi, c)
+        psi_eval = eval_conservative_affine_field(b_psi, h_psi, c)
+
+        phi[k] = np.mean(phi_eval, axis=0)
+        psi[k] = np.mean(psi_eval, axis=0)
+
+        phi_cons_coeffs[k, :, 0] = b_phi
+        phi_cons_coeffs[k, :, 1:] = h_phi
+        psi_cons_coeffs[k, :, 0] = b_psi
+        psi_cons_coeffs[k, :, 1:] = h_psi
+
+        pde_residual_phi.append(float(np.linalg.norm(phi_eval - phi_eval_raw) / (np.linalg.norm(phi_eval_raw) + 1e-12)))
+        pde_residual_psi.append(float(np.linalg.norm(psi_eval - psi_eval_raw) / (np.linalg.norm(psi_eval_raw) + 1e-12)))
+
+        # 使用任意 anchor 初值积分，然后对零浓度参考集做一致锚�?
+        u_phi = integrate_conservative_affine_potential(b_phi, h_phi, c, reference_index=int(anchor_idx[0]))
+        u_psi = integrate_conservative_affine_potential(b_psi, h_psi, c, reference_index=int(anchor_idx[0]))
+
+        # 参考集锚定：f(0)=1, g(0)=0
+        u_phi = u_phi - float(np.mean(u_phi[anchor_idx]))
+        u_psi = u_psi - float(np.mean(u_psi[anchor_idx]))
+
+        # 防止指数/相位放大导致重建失真（稳健比例缩放）
+        max_shift = 0.5 * wl_span
+        u_phi_safe = np.clip(u_phi, -max_shift, max_shift)
+        f_est[:, k] = np.exp(u_phi_safe)
+        g_est[:, k] = np.clip(u_psi, -max_shift, max_shift)
+
+    diagnostics = consistency_metrics_from_affine(
+        np.mean(phi_coeffs, axis=0),
+        np.mean(psi_coeffs, axis=0),
+        c,
+    )
+    t_field = perf_counter()
+    diagnostics.update(
+        {
+            "phi_l2": float(np.linalg.norm(phi)),
+            "psi_l2": float(np.linalg.norm(psi)),
+            "gamma_rank_residual": gamma_diag["gamma_rank_residual"],
+            "gamma_energy_capture": gamma_diag["gamma_energy_capture"],
+            "gamma_sigma_gap_min": gamma_diag["gamma_sigma_gap_min"],
+            "gamma_ap_t_error": gamma_diag.get("gamma_ap_t_error", 0.0),
+            "gamma_linear_residual_mean": gamma_linear_diag["gamma_linear_residual_mean"],
+            "gamma_linear_residual_max": gamma_linear_diag["gamma_linear_residual_max"],
+>>>>>>> 2d9cf06 (Initial commit)
