@@ -35,6 +35,43 @@
 3. **联合对角化**（`joint_diagonalize`）：寻找使所有算子同时（近似）对角化的基 B(ω)
 4. **物理候选库构造**（`build_physical_candidate_library`）：为 SINDy-PI 构建多项式/非线性候选函数库
 
+## 弱形式算子库（Weak-Form Operator Library）
+
+### 当前回答：`compute_weak_operators` ≠ 真正弱形式
+
+`operator.py` 中的 `compute_weak_operators` **不是**真正的弱形式实现：
+- 仍以 `d_d_c`（对含噪数据的数值微分结果）作为输入
+- 只是事后将算子乘以测试函数权重，附加一个近似修正项
+- 本质是强形式算子加权，而非分部积分（IBP）
+
+### 真正的弱形式：`build_weak_form_library`
+
+`operator.py` 中的 `build_weak_form_library` 是**真正的弱形式**实现：
+- **不需要 `d_d_c`**，仅使用 `d_hat`（原始频域数据）
+- 通过分部积分（IBP）将导数从含噪数据 D 转移到光滑测试函数 ψ_m：
+  ```
+  ⟨L_i, ψ_m⟩(ω) = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln D(c_n, ω)
+  ```
+- 测试函数的梯度 `∂_{c_i}ψ_m` 由多项式解析计算（精确、无噪声）
+- 库形状 `(M, k_eff)`，与 `solve_nullspace` 直接兼容（M 充当"样本"轴）
+
+### 配置方式
+
+```python
+cfg = DiscoveryConfig(
+    use_weak_form=True,          # 启用真正弱形式管线
+    weak_form_test_degree=2,     # 测试函数多项式阶数（默认 2）
+    k_mode="fixed",
+    k_value=3,
+)
+out = run_discovery(spectra, factors, wavelengths, cfg)
+```
+
+### IBP 边界项说明
+弱形式（IBP）与强形式点乘 `Σ_n ψ_m·L_i` 之间差一个边界项。当测试函数在控制空间
+边界处为零（紧支撑）时两者相等（即 WSINDy 的标准设置）。对非紧支撑的多项式测试函数，
+边界项非零，但输出仍是物理方程识别的有效弱形式残差，可直接用于稀疏回归。
+
 ## 光谱平移处理
 - 表示方式：在频域用相位 `exp(i * ω * g_shift)` 表示位移，IFFT 后对应波长平移。
 - 现状：积分路径已移除，`g_shift` 默认全零，但接口保留；若外部提供 `g_shift`，所有重建/校准逻辑会自动使用。

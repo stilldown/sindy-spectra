@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from typing import Tuple, Dict
+from typing import List, Tuple, Dict
 
 from .types import DiscoveryConfig
 
@@ -90,9 +90,189 @@ def construct_inverse_library(
     return library, basis, A, omega_means
 
 
-# ----- weak-form helpers (placeholders) -----
+# ---------------------------------------------------------------------------
+# 真正的弱形式算子库（True Weak-Form Operator Library）
+# ---------------------------------------------------------------------------
+# 与上方的 compute_weak_operators（占位符）不同，下面的实现是**真正的弱形式**：
+#   - 不需要 d_d_c（无需对含噪数据求导）
+#   - 使用测试函数 ψ_m(c) 与 ln D(c,ω) 的内积
+#   - 通过分部积分（IBP）将导数从含噪数据 D 转移到光滑测试函数 ψ_m 上
+#
+# 数学基础（一阶 Euler 算子的弱形式）：
+#   强形式: L_i(c,ω) = c_i · ∂_{c_i} ln D(c,ω)
+#   弱形式: ⟨L_i, ψ_m⟩(ω) = -⟨ln D(·,ω), ∂_{c_i}[ψ_m(·) c_i]⟩
+#         = -Σ_n ( ∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n) ) · ln D(c_n, ω)
+# ---------------------------------------------------------------------------
 
 from .preprocess import _detect_cartesian_grid
+
+
+def _build_polynomial_test_functions_with_grads(
+    factors: np.ndarray,
+    degree: int = 2,
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    r"""构造多项式测试函数及其解析梯度。
+
+    对控制变量 ``factors`` 构建最高阶数为 ``degree`` 的多项式基函数，
+    并同时计算每个函数关于每个控制维度的**解析**一阶偏导。
+
+    Parameters
+    ----------
+    factors : ndarray, shape (N, n_controls)
+        所有样本点的控制变量取值。
+    degree : int
+        多项式最高阶数（1 或 2），默认 2。
+
+    Returns
+    -------
+    Psi : ndarray, shape (M, N)
+        测试函数矩阵——每行为一个测试函数在 N 个样本点上的取值。
+    dPsi : ndarray, shape (n_controls, M, N)
+        ``dPsi[i, m, n] = ∂_{c_i} ψ_m(c_n)``
+    names : list of str, length M
+        各测试函数的名称。
+    """
+    N, n_controls = factors.shape
+    psi_list: List[np.ndarray] = []
+    dpsi_list: List[np.ndarray] = []   # each: (n_controls, N)
+    names: List[str] = []
+
+    # 常数函数 ψ_0 = 1
+    psi_list.append(np.ones(N))
+    dpsi_list.append(np.zeros((n_controls, N)))
+    names.append("1")
+
+    # 一阶: ψ = c_i,  ∂_{c_j}ψ = δ_{ij}
+    for i in range(n_controls):
+        psi_list.append(factors[:, i].copy())
+        dp = np.zeros((n_controls, N))
+        dp[i] = 1.0
+        dpsi_list.append(dp)
+        names.append(f"c_{i + 1}")
+
+    if degree >= 2:
+        # 自身平方: ψ = c_i^2,  ∂_{c_j}ψ = 2c_i δ_{ij}
+        for i in range(n_controls):
+            psi_list.append(factors[:, i] ** 2)
+            dp = np.zeros((n_controls, N))
+            dp[i] = 2.0 * factors[:, i]
+            dpsi_list.append(dp)
+            names.append(f"c_{i + 1}^2")
+
+        # 交叉项: ψ = c_i c_j (i < j),  ∂_{c_k}ψ = δ_{ki}c_j + δ_{kj}c_i
+        for i in range(n_controls):
+            for j in range(i + 1, n_controls):
+                psi_list.append(factors[:, i] * factors[:, j])
+                dp = np.zeros((n_controls, N))
+                dp[i] = factors[:, j]
+                dp[j] = factors[:, i]
+                dpsi_list.append(dp)
+                names.append(f"c_{i + 1}*c_{j + 1}")
+
+    Psi = np.array(psi_list)                      # (M, N)
+    dPsi = np.array(dpsi_list).transpose(1, 0, 2) # (n_controls, M, N)
+    return Psi, dPsi, names
+
+
+def build_weak_form_library(
+    d_hat: np.ndarray,
+    factors: np.ndarray,
+    omega: np.ndarray,
+    test_func_degree: int = 2,
+    k_eff: int | None = None,
+) -> Tuple[Dict[str, np.ndarray], List[str], np.ndarray]:
+    r"""**真正的弱形式算子库**——通过分部积分（IBP）构造，无需对含噪数据求导。
+
+    与 :func:`compute_weak_operators` 的关键区别
+    -----------------------------------------
+    ``compute_weak_operators`` 仍以 ``d_d_c``（数值微分结果）作为输入，
+    只是事后将结果乘以测试函数权重，并不是真正的弱形式。
+
+    本函数**不需要** ``d_d_c``，仅使用频域数据 ``d_hat`` 本身：
+
+    .. math::
+
+        \langle L_i, \psi_m \rangle(\omega)
+            = -\sum_n \bigl(
+                \partial_{c_i}\psi_m(c_n)\cdot c_i(n)
+                + \psi_m(c_n)
+              \bigr) \cdot \ln D(c_n, \omega)
+
+    其中 :math:`\partial_{c_i}[\psi_m(c)\,c_i]` 是对**光滑测试函数**的导数，
+    可以解析计算，因此完全绕开了对含噪数据 :math:`D` 的数值微分。
+
+    库的形状约定
+    -----------
+    每个库条目的形状为 ``(M, k_eff)``，其中 M = 测试函数数量。
+    该形状与 :func:`~opera.discovery.pipeline_utils.solve_nullspace`
+    直接兼容（M 充当"样本"轴，k_eff 充当"组分"轴）。
+
+    Parameters
+    ----------
+    d_hat : ndarray, shape (N, n_freq)
+        频域观测数据（对波长/空间维做 rfft 后的结果）。
+    factors : ndarray, shape (N, n_controls)
+        所有样本点的控制变量取值矩阵。
+    omega : ndarray, shape (n_freq,)
+        归一化频率轴（例如 ``np.linspace(0, 1, n_freq)``）。
+    test_func_degree : int
+        测试函数的多项式阶数，默认 2。
+    k_eff : int or None
+        保留的频率分量数；None = 保留全部。
+
+    Returns
+    -------
+    library : dict[str, ndarray(M, k_eff)]
+        弱形式算子库，键名遵循 ``solve_nullspace`` 的 ``_f``/``_g`` 过滤约定：
+
+        * ``"wln_f"``, ``"wg"`` — 零阶项（``⟨ln D, ψ_m⟩`` 的实/虚部）
+        * ``"wL_{i}_f"``, ``"wL_{i}_g"`` — 第 i 个控制维的一阶弱 Euler 算子
+    names : list[str], length M
+        测试函数名称列表。
+    Psi : ndarray, shape (M, N)
+        测试函数在所有样本点的取值矩阵。
+    """
+    N, n_freq = d_hat.shape
+    n_controls = factors.shape[1]
+
+    if k_eff is None:
+        k_eff = n_freq
+    k_eff = min(k_eff, n_freq)
+    omega_k = omega[:k_eff]
+
+    # 复数对数：ln D(c, ω)，shape (N, k_eff)
+    ln_D = np.log(d_hat[:, :k_eff] + 1e-12)
+
+    # 构造多项式测试函数及其解析梯度
+    Psi, dPsi, names = _build_polynomial_test_functions_with_grads(
+        factors, degree=test_func_degree
+    )
+    # Psi:  (M, N)
+    # dPsi: (n_controls, M, N)
+
+    library: Dict[str, np.ndarray] = {}
+
+    # -------------------------------------------------------------------
+    # 零阶项: ⟨ln D(·, ω), ψ_m⟩ = Psi @ ln_D  → (M, k_eff)
+    # -------------------------------------------------------------------
+    w0 = Psi @ ln_D                                              # (M, k_eff)
+    library["wln_f"] = np.real(w0)
+    library["wg"] = -np.imag(w0) / (omega_k[None, :] + 1e-9)
+
+    # -------------------------------------------------------------------
+    # 一阶弱 Euler 算子 (IBP, 无需 d_d_c):
+    #   ⟨c_i ∂_{c_i} ln D, ψ_m⟩(ω)
+    #       = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln D(c_n, ω)
+    # -------------------------------------------------------------------
+    for i in range(n_controls):
+        ci = factors[:, i]                                       # (N,)
+        # IBP 核: ∂_{c_i}[ψ_m(c) · c_i] = ∂_{c_i}ψ_m · c_i + ψ_m
+        ibp_i = dPsi[i] * ci[None, :] + Psi                     # (M, N)
+        wLi = -(ibp_i @ ln_D)                                   # (M, k_eff)
+        library[f"wL_{i + 1}_f"] = np.real(wLi)
+        library[f"wL_{i + 1}_g"] = -np.imag(wLi) / (omega_k[None, :] + 1e-9)
+
+    return library, names, Psi
 
 
 def _compute_control_gradient(field: np.ndarray, factors: np.ndarray) -> np.ndarray:

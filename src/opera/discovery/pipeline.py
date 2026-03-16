@@ -46,7 +46,25 @@ def run_discovery(
     t_deriv = perf_counter()
 
     # choose construction method based on config flag
-    if cfg.use_inverse_operator:
+    if cfg.use_weak_form:
+        # ---------------------------------------------------------------
+        # 真正的弱形式管线：不使用 d_d_c，通过 IBP 从 d_hat 直接构造算子库
+        # ---------------------------------------------------------------
+        from .operator import build_weak_form_library
+        lib, _psi_names, _Psi = build_weak_form_library(
+            d_hat=d_hat,
+            factors=c,
+            omega=omega,
+            test_func_degree=cfg.weak_form_test_degree,
+            k_eff=int(cfg.k_value) if cfg.k_mode == "fixed" else int(cfg.k_max),
+        )
+        # 弱形式库使用 SVD 谱基作为输出占位
+        from scipy.linalg import svd as _svd
+        _, _, Vt = _svd(d_hat, full_matrices=False)
+        k_w = list(lib.values())[0].shape[1]
+        basis = Vt[:k_w, :]
+        A = d_hat @ basis.conj().T
+    elif cfg.use_inverse_operator:
         # 基于伪逆构造算子库，并对算子加权形成弱算子（默认均匀权重）
         lib, basis, A, w_means = construct_inverse_library(
             d_hat=d_hat,

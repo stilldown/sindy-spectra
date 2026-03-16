@@ -43,6 +43,11 @@ class DiscoveryConfig:
     matrix: MatrixConfig = field(default_factory=MatrixConfig)
     # 如果为 True 则使用伪逆算子管线而不是基投影
     use_inverse_operator: bool = False
+    # 如果为 True 则使用真正的弱形式算子库（无需 d_d_c）替代强形式库
+    # 弱形式通过对多项式测试函数做分部积分（IBP）避免对含噪数据求导
+    use_weak_form: bool = False
+    # 弱形式测试函数的多项式阶数（默认 2）
+    weak_form_test_degree: int = 2
 
 
 @dataclass
