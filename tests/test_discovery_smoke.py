@@ -122,7 +122,7 @@ def test_discovery_three_controls():
     s2 = amp2 * np.exp(-0.5 * ((x - center2) / 24.0) ** 2)
     spectra = s1 + s2 + 0.01 * rng.normal(size=(n_samples, n_wl))
 
-    cfg = DiscoveryConfig(k_mode="fixed", k_value=4, max_components=4, sparsity_threshold=1e-2)
+    cfg = DiscoveryConfig(k_mode="fixed", k_value=4, sparsity_threshold=1e-2)
     out = run_discovery(spectra, factors, wavelengths, cfg)
 
     assert out.f_response_eval.shape[0] == n_samples
@@ -158,7 +158,7 @@ def test_discovery_requires_zero_anchor_samples():
     s2 = 0.7 * np.exp(-0.5 * ((x - (575 - 10 * c2[:, None])) / 25.0) ** 2)
     spectra = s1 + s2
 
-    cfg = DiscoveryConfig(k_mode="fixed", k_value=2, max_components=2)
+    cfg = DiscoveryConfig(k_mode="fixed", k_value=2, sparsity_threshold=1e-2)
     with pytest.raises(ValueError, match="未检测到零浓度样本"):
         run_discovery(spectra, factors, wavelengths, cfg)
 
@@ -185,8 +185,8 @@ def test_fixed_k_constrains_xi_width_and_blocks_present():
     s2 = (0.5 + 0.3 * c1[:, None]) * np.exp(-0.5 * ((x - (585 - 9 * c2[:, None] + 5 * c3[:, None])) / 23.0) ** 2)
     spectra = s1 + s2
 
-    # fixed 模式下仅由 k_value 决定；max_components 不应覆盖
-    cfg = DiscoveryConfig(k_mode="fixed", k_value=2, max_components=6, k_max=6, sparsity_threshold=1e-2)
+    # fixed 模式下仅由 k_value 决定；k_max 不应覆盖
+    cfg = DiscoveryConfig(k_mode="fixed", k_value=2, k_max=6, sparsity_threshold=1e-2)
     out = run_discovery(spectra, factors, wavelengths, cfg)
 
     assert out.Xi.ndim == 3

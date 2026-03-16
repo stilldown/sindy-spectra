@@ -23,7 +23,6 @@ def make_config(
         k_value=k_value,
         k_max=k_max,
         rank_energy_threshold=rank_energy_threshold,
-        max_components=k_value,
         sparsity_threshold=sparsity_threshold,
         zero_anchor_tol=zero_anchor_tol,
         matrix=MatrixConfig(**mat_cfg),

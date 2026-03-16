@@ -1,3 +1,29 @@
+"""备选算子库：伪逆路径与真弱形式（IBP）路径。
+
+两种算子路径
+-----------
+本模块提供两条与 :mod:`opera.discovery.pipeline_utils` 不同的算子构造路径：
+
+**路径 A — 伪逆算子（construct_inverse_library）**
+
+不做 SVD 谱基投影，直接计算::
+
+    L_j^{inv}(ω) = diag(D† · ∂D/∂c_j)   ∈ ℂ^P
+
+其中 D† = pinv(D̂) ∈ ℂ^{P×N} 是 Moore-Penrose 伪逆。
+取对角线相当于对每个频率 ω 独立估计算子标量值。
+截断到前 k_eff 个频率以控制维度。
+
+**路径 B — 真弱形式（build_weak_form_library）**
+
+无需 ∂D̂/∂c_j（避免对含噪数据求导）。利用分部积分（IBP）将
+导数从 D̂ 转移到光滑测试函数 ψ_m(c)::
+
+    ⟨c_i ∂_{c_i} ln D, ψ_m⟩(ω)
+        = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln D̂(c_n, ω)
+
+测试函数 ψ_m 取多项式基（最高 ``test_func_degree`` 阶），梯度解析计算。
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -14,95 +40,78 @@ def construct_inverse_library(
     factors: np.ndarray,
     config: DiscoveryConfig,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
-    r"""Build operator library using pseudoinverse formulas.
+    r"""伪逆算子库（不做 SVD 谱基投影）。
 
-    This routine uses expressions such as D^\dagger \partial_c D
-    without performing an SVD basis projection.  The returned dictionary
-    has the same shape convention as construct_pure_library so downstream
-    code can handle either pipeline interchangeably.
+    对每个频率 ω 独立计算::
 
-    Results dimensions:
-    library[name] is shape (N, K) where K is chosen by config.k_max or
-    config.k_value.  basis is merely a placeholder (original d_hat may be
-    returned).  A may equal d_hat or its projection.  omega_means behaves
-    as in construct_pure_library.
+        L_j^{inv}(ω) = diag(D† · ∂D̂/∂c_j)            （一阶）
+        Ξ_{ij}^{inv}(ω) = diag(D† · ∂²D̂/(∂c_i∂c_j))  （二阶）
+
+    其中 D† = pinv(D̂) ∈ ℂ^{P×N} 是 Moore-Penrose 伪逆。
+    取对角线 → 截断到前 k_eff 个频率 → 在 N 个样本上广播为 (N, k_eff) 形状。
+
+    同时以 SVD 谱基作为输出的 ``basis``/``A``/``omega_means``
+    （仅用于下游重建，不影响算子库的计算逻辑）。
+
+    Returns
+    -------
+    library        : dict[str, ndarray(N, k_eff)]
+    basis          : ndarray (k_eff, P)   SVD 谱基（占位用）
+    A              : ndarray (N, k_eff)   投影系数
+    omega_means    : ndarray (k_eff,)     各谱基有效频率
     """
-    # 伪逆算子
-    # 对矩阵 d_hat (N x M) 取 Moore-Penrose 伪逆
+    # D† = pinv(D̂) ∈ ℂ^{P×N}
     D_dag = np.linalg.pinv(d_hat)
 
     n_samples, n_freq = d_hat.shape
     n_controls = factors.shape[1]
 
-    # 这里我们暂时仍保留 K=rank 作为列数，方便与现有求 nullspace 兼容
-    # 确定 K 与 config 逻辑一致
+    # 确定有效组分数 k_eff（与 construct_pure_library 逻辑一致）
     k_max = int(config.k_max)
     k_eff = min(k_max, n_freq)
     if config.k_mode == "fixed":
         k_eff = int(config.k_value)
 
-    # operator 值的直接计算；与原有 L1/Xi2 结构类似，但未投影
     library: Dict[str, np.ndarray] = {}
 
-    # 0阶项 - 截断到 k_eff 使得所有算子具有一致的列数 (N_samples, k_eff)
+    # 零阶：复对数（截断到前 k_eff 个频率）
     d_hat_k = d_hat[:, :k_eff]
-    omega_k = omega[:k_eff]
+    omega_k  = omega[:k_eff]
     ln_f = np.real(np.log(d_hat_k + 1e-12))
-    g = -np.imag(np.log(d_hat_k + 1e-12)) / (omega_k + 1e-9)
+    g    = -np.imag(np.log(d_hat_k + 1e-12)) / (omega_k + 1e-9)
     library["ln_f"] = ln_f
-    library["g"] = g
+    library["g"]    = g
 
-    # 计算一阶伪逆算子 L1_cj = D^\dagger (d/dc_j D)
-    # D_dag 形状为 (n_freq, n_samples)，d_d_c[:, j, :] 形状为 (n_samples, n_freq)
-    # 矩阵乘积：(n_freq, n_samples) @ (n_samples, n_freq) = (n_freq, n_freq)
+    # 一阶：diag(D† · ∂D̂/∂c_j)，广播为 (N, k_eff)
+    # D_dag: (P, N)，d_d_c[:,j,:]: (N, P)  →  D_dag @ d_d_c = (P, P)
     for j in range(n_controls):
-        term = D_dag @ d_d_c[:, j, :]  # shape (n_freq, n_freq)
-        # 这里只取对角线作为每个频率的响应
-        diag = np.diag(term)[:k_eff]
-        # 为兼容，重复成 (N,k_eff) 形状
-        lib_j = np.tile(diag, (n_samples, 1))
+        term = D_dag @ d_d_c[:, j, :]            # (P, P)
+        diag = np.diag(term)[:k_eff]             # (k_eff,)
+        lib_j = np.tile(diag, (n_samples, 1))    # (N, k_eff)
         library[f"L1_c{j+1}_f"] = np.real(lib_j)
         library[f"L1_c{j+1}_g"] = -np.imag(lib_j) / (omega[:k_eff] + 1e-9)
 
-    # 二阶伪逆算子类似
+    # 二阶：diag(D† · ∂²D̂/(∂c_i∂c_j))
     for i in range(n_controls):
         for j in range(n_controls):
-            term = D_dag @ d2_d_c[:, i, j, :]  # shape (n_freq, n_freq)
+            term = D_dag @ d2_d_c[:, i, j, :]    # (P, P)
             diag = np.diag(term)[:k_eff]
             lib_f = np.tile(np.real(diag), (n_samples, 1))
             lib_g = np.tile(-np.imag(diag) / (omega[:k_eff] + 1e-9), (n_samples, 1))
             library[f"Xi2_c{i+1}c{j+1}_f"] = lib_f
             library[f"Xi2_c{i+1}c{j+1}_g"] = lib_g
 
-    # 计算 SVD 谱基（仅用于构造输出，不影响算子库的伪逆构造逻辑）
-    # 这使得 basis 形状与 construct_pure_library 一致，为 (k_eff, n_freq)
+    # SVD 谱基（仅用于重建输出，不影响算子计算）
     from scipy.linalg import svd as _svd
     _, _, Vt = _svd(d_hat, full_matrices=False)
-    spectral_basis = Vt[:k_eff, :]              # (k_eff, n_freq)
+    spectral_basis = Vt[:k_eff, :]              # (k_eff, P)
     A_proj = d_hat @ spectral_basis.conj().T    # (N, k_eff)
     omega_means = np.real(
         np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
-    )                                            # (k_eff,)
+    )                                           # (k_eff,)
 
-    basis = spectral_basis
-    A = A_proj
+    return library, spectral_basis, A_proj, omega_means
 
-    return library, basis, A, omega_means
-
-
-# ---------------------------------------------------------------------------
-# 真正的弱形式算子库（True Weak-Form Operator Library）
-# ---------------------------------------------------------------------------
-# 与上方的 compute_weak_operators（占位符）不同，下面的实现是**真正的弱形式**：
-#   - 不需要 d_d_c（无需对含噪数据求导）
-#   - 使用测试函数 ψ_m(c) 与 ln D(c,ω) 的内积
-#   - 通过分部积分（IBP）将导数从含噪数据 D 转移到光滑测试函数 ψ_m 上
-#
-# 数学基础（一阶 Euler 算子的弱形式）：
-#   强形式: L_i(c,ω) = c_i · ∂_{c_i} ln D(c,ω)
-#   弱形式: ⟨L_i, ψ_m⟩(ω) = -⟨ln D(·,ω), ∂_{c_i}[ψ_m(·) c_i]⟩
-#         = -Σ_n ( ∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n) ) · ln D(c_n, ω)
-# ---------------------------------------------------------------------------
 
 from .preprocess import _detect_cartesian_grid
 

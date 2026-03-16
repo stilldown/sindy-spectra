@@ -1,9 +1,35 @@
+"""预处理层：输入验证与频域张量计算。
+
+数学背景
+--------
+设观测矩阵 S ∈ ℝ^{N×M}，其中 N 为样本数，M 为波长数。
+每行 S(c, λ) 是在控制条件 c 下测量的光谱。
+
+步骤 1 — 去直流::
+
+    S̃(c, λ) = S(c, λ) - ⟨S(c, ·)⟩_λ
+
+步骤 2 — 半频带 FFT（rfft）::
+
+    D̂(c, ω) = Σ_{λ} S̃(c, λ) e^{-iωλ},   ω ∈ {0, 1/(M-1), …, 1}
+
+得到频域张量 D̂ ∈ ℂ^{N×P}，P = M//2 + 1 为正频率数量。
+归一化频率轴 ω̄ ∈ [0, 1] 消除对波长单位的依赖。
+
+步骤 3 — 控制导数（等间距笛卡尔网格，中心差分）::
+
+    ∂D̂/∂c_j ≈ (D̂(c + h_j ê_j, ·) - D̂(c - h_j ê_j, ·)) / (2h_j)
+    ∂²D̂/(∂c_i ∂c_j) ≈ 逐步对 ∂D̂/∂c_i 再做 c_j 方向差分
+
+这些导数供 ``pipeline_utils.construct_pure_library`` 构造 Euler 算子使用。
+"""
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import hilbert
+
 
 def validate_inputs(spectra: np.ndarray, factors: np.ndarray, wavelengths: np.ndarray) -> None:
+    """校验 run_discovery 的三个必要输入的形状与一致性。"""
     if spectra.ndim != 2:
         raise ValueError("spectra 必须为二维数组: (n_samples, n_wavelengths)")
     if factors.ndim != 2:
@@ -16,37 +42,44 @@ def validate_inputs(spectra: np.ndarray, factors: np.ndarray, wavelengths: np.nd
         raise ValueError("spectra 的光谱长度必须等于 wavelengths 长度")
 
 
-def compute_analytic_signal(spectra: np.ndarray) -> np.ndarray:
-    """去均值并计算复解析信号 D_H"""
-    spectra_detrend = spectra - np.mean(spectra, axis=1, keepdims=True)
-    return hilbert(spectra_detrend, axis=1)
-
 def compute_fourier_tensor(spectra: np.ndarray, wavelengths: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """计算归一化频率轴的 Fourier 张量。此处返回的是 rfft 下的频域数据（等价于只保留非负频率）"""
-    # 按照新架构，我们更推荐在频域用 rfft 实现半频带截断，这与解析信号的频域表现完全一致。
-    wl = np.asarray(wavelengths, dtype=float)
+    """将光谱矩阵变换到频域，返回复频域张量 D̂ 和归一化频率轴 ω̄。
+
+    变换步骤
+    --------
+    1. 去直流：S̃(c, λ) = S(c, λ) - mean_λ S(c, λ)
+    2. rfft：D̂(c, ω) = FFT(S̃(c, ·))，保留非负频率半频带
+
+    返回值
+    ------
+    d_hat : ndarray, shape (N, P)
+        复频域张量，P = M//2 + 1（正频率数），M 为波长点数。
+    omega_bar : ndarray, shape (P,)
+        归一化频率轴 ω̄ ∈ [0, 1]，与波长单位无关。
+    """
     # 去直流
     spectra_detrend = spectra - np.mean(spectra, axis=1, keepdims=True)
-    
-    # 解析信号的频域等效：只取非负频率 (rfft) 并将正频率振幅翻倍
+    # 半频带 FFT：只保留非负频率成分
     d_hat = np.fft.rfft(spectra_detrend, axis=1)
-    # 不强制翻倍也可以，因为后续会执行列级范数归一化，尺度不影响 SVD 的零空间。
-    
     n_freq = d_hat.shape[1]
-    # 将频率轴严格归一化到 [0, 1]
+    # 归一化频率轴，严格覆盖 [0, 1]
     omega_bar = np.linspace(0.0, 1.0, n_freq)
-    
     return d_hat, omega_bar
 
 
 def _detect_cartesian_grid(factors: np.ndarray, tol: float = 1e-5) -> tuple[bool, list[np.ndarray], tuple[int, ...], np.ndarray]:
-    """Detect if the scatter points form a complete cartesian grid and return necessary metadata.
+    """检测散点控制变量是否构成完整的等间距笛卡尔网格。
 
-    Returns:
-        is_grid: bool
-        unique_vals: list of 1D arrays for each dimension
-        grid_shape: tuple of ints (size along each dim)
-        sort_idx: indices that sort the flattened factors into grid order
+    笛卡尔网格条件：沿每个控制维度的唯一取值个数之积 = 总样本数，
+    且所有点均精确匹配网格交叉点（误差 < tol）。
+
+    Returns
+    -------
+    is_grid : bool
+    unique_vals : list of 1-D arrays, one per control dimension
+    grid_shape : tuple[int, ...]
+    sort_idx : ndarray
+        将散点 factors 重排为 C-order 网格顺序的索引。
     """
     n_samples, n_dims = factors.shape
     unique_vals = []
@@ -83,7 +116,15 @@ def estimate_control_derivatives_scattered(
     factors: np.ndarray,
     eps: float = 1e-12,
 ) -> np.ndarray:
-    """在散点控制空间上估计偏导，返回形状 (n_samples, n_controls, n_freq)。"""
+    """在等间距笛卡尔网格上用中心差分估计偏导 ∂D̂/∂c_j。
+
+    要求 ``factors`` 必须构成完整的等间距笛卡尔网格。
+
+    Returns
+    -------
+    grads : ndarray, shape (N, n_controls, n_freq)
+        grads[n, j, k] = (∂D̂/∂c_j)(c_n, ω_k)
+    """
     y = np.asarray(field)
     c = np.asarray(factors, dtype=float)
     n_samples, n_freq = y.shape
@@ -124,11 +165,11 @@ def estimate_control_second_derivatives_scattered(
     factors: np.ndarray,
     eps: float = 1e-12,
 ) -> np.ndarray:
-    """基于一阶导估计控制二阶导。
+    """在等间距笛卡尔网格上用中心差分估计二阶混合偏导 ∂²D̂/(∂c_i ∂c_j)。
 
-    输入 first_derivatives 形状为 (n_samples, n_controls, n_freq)，
-    输出 second_derivatives 形状为 (n_samples, n_controls, n_controls, n_freq)，
-    其中 second_derivatives[:, i, j, :] 对应 ∂²/∂c_i∂c_j。
+    输入 ``first_derivatives`` 形状 (N, n_controls, n_freq)，
+    输出 shape (N, n_controls, n_controls, n_freq)，其中索引 [n, i, j, k]
+    对应 (∂²D̂/∂c_i∂c_j)(c_n, ω_k)。
     """
     d1 = np.asarray(first_derivatives)
     n_samples, n_controls, n_freq = d1.shape
@@ -164,7 +205,18 @@ def build_control_derivative_bundle(
     factors: np.ndarray,
     eps: float = 1e-12,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """统一构建一阶与二阶控制导数。"""
+    """统一构建一阶与二阶控制偏导数束。
+
+    对零浓度锚点（c = 0）：若整体不构成笛卡尔网格，则将其剔除后
+    对剩余网格差分，锚点处导数补零（物理上 c=0 处无 Euler 算子意义）。
+
+    Returns
+    -------
+    d1 : ndarray, shape (N, n_controls, n_freq)
+        一阶偏导 ∂D̂/∂c_j
+    d2 : ndarray, shape (N, n_controls, n_controls, n_freq)
+        二阶偏导 ∂²D̂/(∂c_i∂c_j)
+    """
     c = np.asarray(factors, dtype=float)
     y = np.asarray(d_hat)
     n_samples, n_freq = y.shape
