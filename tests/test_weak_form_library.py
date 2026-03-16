@@ -1,17 +1,14 @@
-"""Tests for the TRUE weak-form operator library (`build_weak_form_library`).
+"""Tests for the weak-form operator library (`build_weak_form_library`).
 
 Key mathematical property being tested:
-    The weak-form pipeline first separates spectral components via SVD projection,
-    then applies IBP inner products to the component-separated log-projections:
+    The weak-form pipeline computes the projection coefficient A by directly
+    multiplying by the Moore-Penrose pseudoinverse D†, without SVD separation:
 
-        Step 1: SVD basis  P = Vt[:K, :]
-        Step 2: Projection A = D̂ @ P†        (N, K) — each column is one pure component
-        Step 3: Log        ln_A = log(A + ε)
+        Step 1: Pseudoinverse  D† = pinv(D̂)
+        Step 2: Projection     A = D̂ @ D†[:, :K]   (N, K) — first K columns of hat matrix
+        Step 3: Log            ln_A = log(A + ε)   ("another way" vs. raw-bin log)
         Step 4: IBP inner product
             ⟨L_i^(k), ψ_m⟩ = -Σ_n (∂_{c_i}ψ_m·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
-
-    Without the SVD projection step, IBP would operate on ln D̂(c,ω) — the mixed
-    superposition — and cannot separate individual component equations.
 """
 import numpy as np
 import pytest
@@ -164,15 +161,15 @@ class TestBuildWeakFormLibraryShapes:
         for key in ["wln_f", "wg", "wL_1_f", "wL_1_g", "wL_2_f", "wL_2_g"]:
             assert key in lib, f"Missing key: {key}"
 
-    def test_k_eff_capped_at_svd_rank(self):
-        """请求 k_eff 超出 min(N, n_freq) 时应截断到 SVD 秩。"""
+    def test_k_eff_capped_at_matrix_rank(self):
+        """请求 k_eff 超出 min(N, n_freq) 时应截断到矩阵秩。"""
         rng = np.random.default_rng(13)
         N, n_freq = 8, 5
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
         factors = rng.uniform(0.1, 2.0, (N, 1))
         omega = np.linspace(0, 1, n_freq)
         lib, _, _, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=100)
-        # SVD of (8,5) has at most 5 singular values
+        # D† of (8,5) gives at most min(N, n_freq) = 5 independent components
         expected_k = min(N, n_freq)
         for val in lib.values():
             assert val.shape[1] == expected_k
@@ -192,18 +189,18 @@ class TestBuildWeakFormLibraryShapes:
 # ---------------------------------------------------------------------------
 
 class TestWeakFormIBPCorrectness:
-    """验证弱形式 IBP 公式与 SVD 投影后的对数系数一致。
+    """验证弱形式 IBP 公式与 D†-投影系数的对数一致。
 
-    新版弱形式先做 SVD 投影分离组分（A = D̂ @ P†），再对
-    ln_A = log(A + ε) 做 IBP 内积。
+    新版弱形式直接乘以 D 逆计算投影系数（A = D̂ @ D†[:, :K]），
+    再对 ln_A = log(A + ε) 做 IBP 内积，不依赖 SVD 分离。
     """
 
     def test_pure_f_recovery(self):
         """验证弱形式输出精确等于 IBP 离散公式（以 ln_A 为信号）。
 
         对 D(c,ω) = exp(α·c_1)·P_spectral(ω) 这类数据：
-        - SVD 给出一个主成分，A ≈ exp(α·c_1) * scale
-        - ln_A ≈ α·c_1 + const（实数）
+        - D† 给出投影系数 A = D̂ @ D†[:, :K]
+        - ln_A ≈ α·c_1 + const（实数部分主导）
         - 弱形式算子输出应满足：
             wL_1_f[m, k] = Re( -Σ_n (∂_{c_1}ψ_m·c_1(n) + ψ_m(c_n)) · ln_A(c_n, k) )
         """

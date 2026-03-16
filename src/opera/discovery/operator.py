@@ -1,8 +1,9 @@
-"""备选算子库：伪逆路径与弱形式+SVD路径。
+"""备选算子库：伪逆路径与弱形式路径（均不依赖 SVD 分离）。
 
 两种算子路径
 -----------
-本模块提供两条与 :mod:`opera.discovery.pipeline_utils` 不同的算子构造路径：
+本模块提供两条与 :mod:`opera.discovery.pipeline_utils` 不同的算子构造路径，
+两条路径均通过直接乘以 D 逆（Moore-Penrose 伪逆 D†）来计算，无需 SVD 分离：
 
 **路径 A — 伪逆算子（construct_inverse_library）**
 
@@ -12,19 +13,22 @@
 
 其中 D† = pinv(D̂) ∈ ℂ^{P×N} 是 Moore-Penrose 伪逆。
 取对角线相当于对每个频率 ω 独立估计算子标量值。
-截断到前 k_eff 个频率以控制维度。
+投影系数 A 通过直接乘以 D 逆得到::
 
-**路径 B — 弱形式 + SVD 组分分离（build_weak_form_library）**
+    A = D̂ @ D†[:, :k_eff]   ∈ ℂ^{N×k_eff}
+
+零阶项 ln A 由此 A 取复数对数（区别于直接对频率箱取对数的方式）。
+
+**路径 B — 弱形式算子（build_weak_form_library）**
 
 无需 ∂D̂/∂c_j（避免对含噪数据求导）。关键步骤：
 
-1. **先做 SVD 投影分离组分**::
+1. **直接乘以 D 逆得到投影系数 A（不用 SVD 分离）**::
 
-       D̂ ≈ Σ_k A_k(c) v_k(ω),   A_k(c) = D̂ @ v_k*   → A ∈ ℂ^{N×K}
+       D† = pinv(D̂)  ∈ ℂ^{P×N}
+       A  = D̂ @ D†[:, :K]  ∈ ℂ^{N×K}   （帽矩阵前 K 列）
 
-   不先分离就直接对 ln D̂ 做 IBP 会混合所有组分，无法得到每个组分的方程。
-
-2. **再对组分对数 ln A_k(c) 做 IBP 内积**::
+2. **对投影系数 ln A_k(c) 做 IBP 内积**::
 
        ⟨c_i ∂_{c_i} ln A_k, ψ_m⟩
            = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
@@ -50,7 +54,7 @@ def construct_inverse_library(
     factors: np.ndarray,
     config: DiscoveryConfig,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
-    r"""伪逆算子库（不做 SVD 谱基投影）。
+    r"""伪逆算子库（不做 SVD 谱基投影，直接乘以 D 逆）。
 
     对每个频率 ω 独立计算::
 
@@ -58,17 +62,20 @@ def construct_inverse_library(
         Ξ_{ij}^{inv}(ω) = diag(D† · ∂²D̂/(∂c_i∂c_j))  （二阶）
 
     其中 D† = pinv(D̂) ∈ ℂ^{P×N} 是 Moore-Penrose 伪逆。
-    取对角线 → 截断到前 k_eff 个频率 → 在 N 个样本上广播为 (N, k_eff) 形状。
+    取对角线 → 截断到前 k_eff 个分量。
 
-    同时以 SVD 谱基作为输出的 ``basis``/``A``/``omega_means``
-    （仅用于下游重建，不影响算子库的计算逻辑）。
+    投影系数 A 通过直接乘以 D 逆得到（无需 SVD）::
+
+        A = D̂ @ D†[:, :k_eff]   ∈ ℂ^{N×k_eff}   （帽矩阵前 k_eff 列）
+
+    零阶项 ln A 对此 D†-投影系数取复数对数，区别于直接对频率箱取对数的旧方式。
 
     Returns
     -------
     library        : dict[str, ndarray(N, k_eff)]
-    basis          : ndarray (k_eff, P)   SVD 谱基（占位用）
-    A              : ndarray (N, k_eff)   投影系数
-    omega_means    : ndarray (k_eff,)     各谱基有效频率
+    spectral_basis : ndarray (k_eff, P)   D†-基（D†前 k_eff 列的转置）
+    A              : ndarray (N, k_eff)   D†-投影系数
+    omega_means    : ndarray (k_eff,)     各分量有效频率
     """
     # D† = pinv(D̂) ∈ ℂ^{P×N}
     D_dag = np.linalg.pinv(d_hat)
@@ -76,51 +83,49 @@ def construct_inverse_library(
     n_samples, n_freq = d_hat.shape
     n_controls = factors.shape[1]
 
-    # 确定有效组分数 k_eff（与 construct_pure_library 逻辑一致）
-    k_max = int(config.k_max)
-    k_eff = min(k_max, n_freq)
+    # 确定有效分量数 k_eff，不超过矩阵秩 min(N, P)
+    k_eff_max = min(n_samples, n_freq)
+    k_eff = k_eff_max
     if config.k_mode == "fixed":
         k_eff = int(config.k_value)
+    k_eff = min(k_eff, k_eff_max)
 
     library: Dict[str, np.ndarray] = {}
 
-    # 零阶：复对数（截断到前 k_eff 个频率）
-    d_hat_k = d_hat[:, :k_eff]
-    omega_k  = omega[:k_eff]
-    ln_f = np.real(np.log(d_hat_k + 1e-12))
-    g    = -np.imag(np.log(d_hat_k + 1e-12)) / (omega_k + 1e-9)
-    library["ln_f"] = ln_f
-    library["g"]    = g
+    # 直接乘以 D 逆：A = D̂ @ D†[:, :k_eff]（帽矩阵前 k_eff 列）
+    A = d_hat @ D_dag[:, :k_eff]                    # (N, k_eff)
+    spectral_basis = D_dag[:, :k_eff].T              # (k_eff, n_freq)
+    omega_means = np.real(
+        np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
+    )                                                # (k_eff,)
+
+    # 零阶：对 D†-投影系数 A 取复数对数（lnA 的另一种实现方式）
+    ln_A = np.log(A + 1e-12)                        # (N, k_eff)
+    library["ln_f"] = np.real(ln_A)
+    library["g"]    = -np.imag(ln_A) / (omega_means[None, :] + 1e-9)
 
     # 一阶：diag(D† · ∂D̂/∂c_j)，广播为 (N, k_eff)
     # D_dag: (P, N)，d_d_c[:,j,:]: (N, P)  →  D_dag @ d_d_c = (P, P)
     for j in range(n_controls):
-        term = D_dag @ d_d_c[:, j, :]            # (P, P)
-        diag = np.diag(term)[:k_eff]             # (k_eff,)
-        lib_j = np.tile(diag, (n_samples, 1))    # (N, k_eff)
+        term = D_dag @ d_d_c[:, j, :]               # (P, P)
+        diag_term = np.diag(term)[:k_eff]            # (k_eff,)
+        lib_j = np.tile(diag_term, (n_samples, 1))   # (N, k_eff)
         library[f"L1_c{j+1}_f"] = np.real(lib_j)
-        library[f"L1_c{j+1}_g"] = -np.imag(lib_j) / (omega[:k_eff] + 1e-9)
+        library[f"L1_c{j+1}_g"] = -np.imag(lib_j) / (omega_means[None, :] + 1e-9)
 
     # 二阶：diag(D† · ∂²D̂/(∂c_i∂c_j))
     for i in range(n_controls):
         for j in range(n_controls):
-            term = D_dag @ d2_d_c[:, i, j, :]    # (P, P)
-            diag = np.diag(term)[:k_eff]
-            lib_f = np.tile(np.real(diag), (n_samples, 1))
-            lib_g = np.tile(-np.imag(diag) / (omega[:k_eff] + 1e-9), (n_samples, 1))
+            term = D_dag @ d2_d_c[:, i, j, :]       # (P, P)
+            diag_term = np.diag(term)[:k_eff]
+            lib_f = np.tile(np.real(diag_term), (n_samples, 1))
+            lib_g = np.tile(
+                -np.imag(diag_term) / (omega_means + 1e-9), (n_samples, 1)
+            )
             library[f"Xi2_c{i+1}c{j+1}_f"] = lib_f
             library[f"Xi2_c{i+1}c{j+1}_g"] = lib_g
 
-    # SVD 谱基（仅用于重建输出，不影响算子计算）
-    from scipy.linalg import svd as _svd
-    _, _, Vt = _svd(d_hat, full_matrices=False)
-    spectral_basis = Vt[:k_eff, :]              # (k_eff, P)
-    A_proj = d_hat @ spectral_basis.conj().T    # (N, k_eff)
-    omega_means = np.real(
-        np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
-    )                                           # (k_eff,)
-
-    return library, spectral_basis, A_proj, omega_means
+    return library, spectral_basis, A, omega_means
 
 
 from .preprocess import _detect_cartesian_grid
@@ -201,24 +206,18 @@ def build_weak_form_library(
     k_eff: int | None = None,
     spectral_basis: np.ndarray | None = None,
 ) -> Tuple[Dict[str, np.ndarray], List[str], np.ndarray, np.ndarray, np.ndarray]:
-    r"""**弱形式算子库**——SVD 投影分离组分后通过 IBP 构造，无需对含噪数据求导。
+    r"""**弱形式算子库**——通过直接乘以 D 逆计算投影系数，再做 IBP 内积，无需 SVD 分离和数值微分。
 
-    数学原理（修正版：先投影再 IBP）
-    ---------------------------------
-    观测的频域数据是 K 个组分的叠加（Beer-Lambert 模型）::
+    数学原理（伪逆版：不用 SVD 分离，直接乘以 D 逆）
+    -------------------------------------------------
+    投影系数 A 通过 Moore-Penrose 伪逆直接计算（无需 SVD）::
 
-        D̂(c, ω) ≈ Σ_k A_k(c) · v_k(ω)
+        D† = pinv(D̂)  ∈ ℂ^{P×N}
+        A  = D̂ @ D†[:, :K]  ∈ ℂ^{N×K}   （帽矩阵前 K 列）
 
-    直接对 ln D̂(c, ω) 做 IBP 会混合所有组分的贡献，无法分离。
-    正确做法是**先通过 SVD 谱基将组分分离**，再对每个组分的对数投影系数
-    做 IBP 内积::
+    对 ln A_k(c) 做 IBP 内积::
 
-        步骤 1：SVD 谱基  P = Vt[:K, :] ∈ ℂ^{K×P}
-        步骤 2：投影      A(c) = D̂ @ P†  ∈ ℂ^{N×K}   （每列 A_k(c) 是单一组分的响应）
-        步骤 3：对数      ln_A = log(A + ε)  ∈ ℂ^{N×K}
-        步骤 4：IBP 内积
-
-            ⟨L_i^{(k)}, ψ_m⟩ = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
+        ⟨L_i^{(k)}, ψ_m⟩ = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
 
     IBP 核 ``∂_{c_i}[ψ_m(c)·c_i]`` 对多项式测试函数 ψ_m 解析可得，
     完全绕开对含噪 D̂ 的数值微分。
@@ -228,7 +227,7 @@ def build_weak_form_library(
     每个库条目形状为 ``(M, K)``，其中
 
     * M = 测试函数数量
-    * K = 保留的谱组分数（非频率箱数！）
+    * K = 保留的分量数（帽矩阵前 K 列）
 
     与 :func:`~opera.discovery.pipeline_utils.solve_nullspace` 直接兼容
     （M 充当"样本"轴，K 充当"组分"轴）。
@@ -244,9 +243,9 @@ def build_weak_form_library(
     test_func_degree : int
         测试函数的多项式阶数，默认 2。
     k_eff : int or None
-        保留的谱组分数 K。None 则保留 min(N, n_freq) 个。
+        保留的分量数 K。None 则保留 min(N, n_freq) 个。
     spectral_basis : ndarray (K, n_freq) or None
-        预计算的 SVD 谱基；若为 None 则内部重新计算。
+        若提供，则仅用于确定 K（k_eff 取其行数）；实际 A 始终由 D† 计算。
 
     Returns
     -------
@@ -260,38 +259,38 @@ def build_weak_form_library(
     Psi : ndarray, shape (M, N)
         测试函数在所有样本点的取值矩阵。
     spectral_basis : ndarray, shape (K, n_freq)
-        SVD 谱基向量矩阵 P（返回供 pipeline 重用，避免重复 SVD）。
+        D†-基（D†前 K 列的转置），供 pipeline 重用。
     A : ndarray, shape (N, K)
-        投影系数 A = D̂ @ P†（返回供 pipeline 作为 f_response_eval）。
+        D†-投影系数 A = D̂ @ D†[:, :K]。
     """
-    from scipy.linalg import svd as _svd
-
     N, n_freq = d_hat.shape
     n_controls = factors.shape[1]
 
-    # ── 步骤 1/2：SVD 谱基 → 投影系数 A ─────────────────────────────────
-    if spectral_basis is None:
-        _, _, Vt = _svd(d_hat, full_matrices=False)
-        K_max = Vt.shape[0]                             # min(N, n_freq)
+    # ── 步骤 1/2：直接乘以 D 逆，无需 SVD 分离 ────────────────────────────
+    D_dag = np.linalg.pinv(d_hat)                   # (n_freq, N)
+    K_max = min(N, n_freq)                           # 最大分量数（不超过矩阵秩）
+
+    if spectral_basis is not None:
+        # 仅用于确定 k_eff
+        k_eff = spectral_basis.shape[0]
+    else:
         if k_eff is None:
             k_eff = K_max
         k_eff = min(k_eff, K_max)
-        spectral_basis = Vt[:k_eff, :]                  # (K, n_freq)
-    else:
-        k_eff = spectral_basis.shape[0]
 
-    A = d_hat @ spectral_basis.conj().T                 # (N, K)
+    # A = D̂ @ D†[:, :k_eff]：帽矩阵前 k_eff 列，形状 (N, K)
+    spectral_basis = D_dag[:, :k_eff].T             # (K, n_freq)
+    A = d_hat @ D_dag[:, :k_eff]                    # (N, K)
 
     # 有效频率 ω_k = Re(diag(P diag(ω) P†))，用于 f/g 分离的归一化因子
     omega_means = np.real(
         np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
-    )                                                   # (K,)
+    )                                                # (K,)
 
-    # ── 步骤 3：对组分投影系数取复数对数 ──────────────────────────────────
+    # ── 步骤 3：对 D†-投影系数取复数对数（lnA 的另一种实现方式）──────────
     # ln_A ∈ ℂ^{N×K}：Re(ln_A) = ln|A_k(c)|，Im(ln_A) = arg(A_k(c))
-    # 注意：这与强形式的 ln|A| 和 -Im/ω 分离完全一致，
-    #       但现在 K 是谱组分数而非频率箱数，避免了混合叠加问题。
-    ln_A = np.log(A + 1e-12)                            # (N, K)
+    # A 由 D† 直接给出（帽矩阵列），区别于旧的 SVD 谱基投影
+    ln_A = np.log(A + 1e-12)                        # (N, K)
 
     # ── 步骤 4：多项式测试函数及其解析梯度 ────────────────────────────────
     Psi, dPsi, names = _build_polynomial_test_functions_with_grads(
@@ -409,7 +408,7 @@ def compute_weak_operators(
     # compute first-order weak operators and store basic L1 matrices
     L1_basic = []
     for j in range(n_controls):
-        raw1 = D_dag @ d_d_c[:, j, :]  # shape (P, P)
+        raw1 = D_dag @ d_d_c[:, j, :]  # shape (n_freq, n_freq)
         m = tile_diag(raw1)
         L1_basic.append(m)
         # weak: psi*m - psi_grad_j（分部积分修正，对每个频率分量减去标量梯度）
@@ -418,7 +417,7 @@ def compute_weak_operators(
     # compute second-order and cross operators
     for i in range(n_controls):
         for j in range(n_controls):
-            raw2 = D_dag @ d2_d_c[:, i, j, :]  # shape (P, P)
+            raw2 = D_dag @ d2_d_c[:, i, j, :]  # shape (n_freq, n_freq)
             m2 = tile_diag(raw2)
             cross_term = L1_basic[i] * L1_basic[j]
             if i == j:

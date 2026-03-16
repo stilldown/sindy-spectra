@@ -30,7 +30,8 @@
     （见 :func:`~opera.discovery.operator.construct_inverse_library`）
 
 * 真弱形式（``use_weak_form=True``）：
-    IBP 内积 ⟨L_i, ψ_m⟩ — 无需数值微分
+    直接乘以 D 逆 A = D̂ @ D†[:, :K]，无需 SVD 分离；
+    对 ln A_k 做 IBP 内积 ⟨L_i, ψ_m⟩ — 无需数值微分
     （见 :func:`~opera.discovery.operator.build_weak_form_library`）
 
 **阶段 4：SINDy-PI 零空间识别**
@@ -111,9 +112,10 @@ def run_discovery(
 
     # ── 阶段 3：算子特征库 Θ ────────────────────────────────────────────────
     if cfg.use_weak_form:
-        # 弱形式路径：先 SVD 分离组分，再对 ln A_k 做 IBP 内积（无需数值微分）
-        # build_weak_form_library 内部做 SVD → 投影 → 对数 → IBP，
-        # 返回 basis 和 A 供后续重建使用，无需在此重新计算 SVD。
+        # 弱形式路径：直接乘以 D 逆计算投影系数（不用 SVD 分离），
+        # 再对 ln A_k 做 IBP 内积（无需数值微分）。
+        # build_weak_form_library 内部做 pinv → A = D̂ @ D†[:, :K] → 对数 → IBP，
+        # 返回 basis 和 A 供后续重建使用。
         from .operator import build_weak_form_library
         lib, _psi_names, _Psi, basis, A = build_weak_form_library(
             d_hat=d_hat,
