@@ -28,16 +28,16 @@ from __future__ import annotations
 import numpy as np
 
 
-def validate_inputs(spectra: np.ndarray, factors: np.ndarray, wavelengths: np.ndarray) -> None:
+def validate_inputs(spectra: np.ndarray, c: np.ndarray, wavelengths: np.ndarray) -> None:
     """校验 run_discovery 的三个必要输入的形状与一致性。"""
     if spectra.ndim != 2:
-        raise ValueError("spectra 必须为二维数组: (n_samples, n_wavelengths)")
-    if factors.ndim != 2:
-        raise ValueError("factors 必须为二维数组: (n_samples, n_controls)")
+        raise ValueError("spectra 必须为二维数组: (N, M)")
+    if c.ndim != 2:
+        raise ValueError("c 必须为二维数组: (N, d)，其中 d 为控制维度数")
     if wavelengths.ndim != 1:
         raise ValueError("wavelengths 必须为一维数组")
-    if spectra.shape[0] != factors.shape[0]:
-        raise ValueError("spectra 与 factors 的样本数必须一致")
+    if spectra.shape[0] != c.shape[0]:
+        raise ValueError("spectra 与 c 的样本数必须一致")
     if spectra.shape[1] != wavelengths.shape[0]:
         raise ValueError("spectra 的光谱长度必须等于 wavelengths 长度")
 
@@ -54,7 +54,7 @@ def compute_fourier_tensor(spectra: np.ndarray, wavelengths: np.ndarray) -> tupl
     ------
     d_hat : ndarray, shape (N, P)
         复频域张量，P = M//2 + 1（正频率数），M 为波长点数。
-    omega_bar : ndarray, shape (P,)
+    omega : ndarray, shape (P,)
         归一化频率轴 ω̄ ∈ [0, 1]，与波长单位无关。
     """
     # 去直流
@@ -63,11 +63,11 @@ def compute_fourier_tensor(spectra: np.ndarray, wavelengths: np.ndarray) -> tupl
     d_hat = np.fft.rfft(spectra_detrend, axis=1)
     n_freq = d_hat.shape[1]
     # 归一化频率轴，严格覆盖 [0, 1]
-    omega_bar = np.linspace(0.0, 1.0, n_freq)
-    return d_hat, omega_bar
+    omega = np.linspace(0.0, 1.0, n_freq)
+    return d_hat, omega
 
 
-def _detect_cartesian_grid(factors: np.ndarray, tol: float = 1e-5) -> tuple[bool, list[np.ndarray], tuple[int, ...], np.ndarray]:
+def _detect_cartesian_grid(c: np.ndarray, tol: float = 1e-5) -> tuple[bool, list[np.ndarray], tuple[int, ...], np.ndarray]:
     """检测散点控制变量是否构成完整的等间距笛卡尔网格。
 
     笛卡尔网格条件：沿每个控制维度的唯一取值个数之积 = 总样本数，
@@ -79,13 +79,13 @@ def _detect_cartesian_grid(factors: np.ndarray, tol: float = 1e-5) -> tuple[bool
     unique_vals : list of 1-D arrays, one per control dimension
     grid_shape : tuple[int, ...]
     sort_idx : ndarray
-        将散点 factors 重排为 C-order 网格顺序的索引。
+        将散点 c 重排为 C-order 网格顺序的索引。
     """
-    n_samples, n_dims = factors.shape
+    n_samples, n_dims = c.shape
     unique_vals = []
     
     for dim in range(n_dims):
-        vals = np.unique(factors[:, dim])
+        vals = np.unique(c[:, dim])
         # 对数值进行排序
         vals.sort()
         unique_vals.append(vals)
@@ -100,12 +100,12 @@ def _detect_cartesian_grid(factors: np.ndarray, tol: float = 1e-5) -> tuple[bool
     mesh = np.meshgrid(*unique_vals, indexing='ij')
     mesh_points = np.stack([m.flatten() for m in mesh], axis=-1)
     
-    # 我们需要找出原始因子到排序网格点的映射
+    # 我们需要找出原始控制变量到排序网格点的映射
     # 使用 lexsort：最后一列先排序
-    sort_idx = np.lexsort([factors[:, i] for i in range(n_dims-1, -1, -1)])
-    sorted_factors = factors[sort_idx]
+    sort_idx = np.lexsort([c[:, i] for i in range(n_dims-1, -1, -1)])
+    sorted_c = c[sort_idx]
     
-    if np.max(np.abs(sorted_factors - mesh_points)) > tol:
+    if np.max(np.abs(sorted_c - mesh_points)) > tol:
         return False, [], (), np.array([])
         
     return True, unique_vals, grid_shape, sort_idx
@@ -113,20 +113,20 @@ def _detect_cartesian_grid(factors: np.ndarray, tol: float = 1e-5) -> tuple[bool
 
 def estimate_control_derivatives_scattered(
     field: np.ndarray,
-    factors: np.ndarray,
+    c: np.ndarray,
     eps: float = 1e-12,
 ) -> np.ndarray:
     """在等间距笛卡尔网格上用中心差分估计偏导 ∂D̂/∂c_j。
 
-    要求 ``factors`` 必须构成完整的等间距笛卡尔网格。
+    要求 ``c`` 必须构成完整的等间距笛卡尔网格。
 
     Returns
     -------
-    grads : ndarray, shape (N, n_controls, n_freq)
+    grads : ndarray, shape (N, n_controls, P)
         grads[n, j, k] = (∂D̂/∂c_j)(c_n, ω_k)
     """
     y = np.asarray(field)
-    c = np.asarray(factors, dtype=float)
+    c = np.asarray(c, dtype=float)
     n_samples, n_freq = y.shape
     n_controls = c.shape[1]
     
@@ -157,25 +157,25 @@ def estimate_control_derivatives_scattered(
         return grads
         
     # 非网格情形不再提供 kNN 估计，强制要求笛卡尔网格以使用中心差分
-    raise ValueError("控制变量必须构成等间距笛卡尔网格，以使用中心差分估计导数")
+    raise ValueError("控制变量 c 必须构成等间距笛卡尔网格，以使用中心差分估计导数")
 
 
 def estimate_control_second_derivatives_scattered(
     first_derivatives: np.ndarray,
-    factors: np.ndarray,
+    c: np.ndarray,
     eps: float = 1e-12,
 ) -> np.ndarray:
     """在等间距笛卡尔网格上用中心差分估计二阶混合偏导 ∂²D̂/(∂c_i ∂c_j)。
 
-    输入 ``first_derivatives`` 形状 (N, n_controls, n_freq)，
-    输出 shape (N, n_controls, n_controls, n_freq)，其中索引 [n, i, j, k]
+    输入 ``first_derivatives`` 形状 (N, n_controls, P)，
+    输出 shape (N, n_controls, n_controls, P)，其中索引 [n, i, j, k]
     对应 (∂²D̂/∂c_i∂c_j)(c_n, ω_k)。
     """
     d1 = np.asarray(first_derivatives)
     n_samples, n_controls, n_freq = d1.shape
     d2 = np.zeros((n_samples, n_controls, n_controls, n_freq), dtype=complex)
 
-    is_grid, uniq_vals, grid_shape, sort_idx = _detect_cartesian_grid(np.asarray(factors))
+    is_grid, uniq_vals, grid_shape, sort_idx = _detect_cartesian_grid(np.asarray(c))
     
     if is_grid:
         inv_sort_idx = np.empty_like(sort_idx)
@@ -197,12 +197,12 @@ def estimate_control_second_derivatives_scattered(
         return d2
 
     # 非网格情形不再提供 kNN 估计
-    raise ValueError("控制变量必须构成等间距笛卡尔网格，以使用中心差分估计导数")
+    raise ValueError("控制变量 c 必须构成等间距笛卡尔网格，以使用中心差分估计导数")
 
 
 def build_control_derivative_bundle(
     d_hat: np.ndarray,
-    factors: np.ndarray,
+    c: np.ndarray,
     eps: float = 1e-12,
 ) -> tuple[np.ndarray, np.ndarray]:
     """统一构建一阶与二阶控制偏导数束。
@@ -212,12 +212,12 @@ def build_control_derivative_bundle(
 
     Returns
     -------
-    d1 : ndarray, shape (N, n_controls, n_freq)
+    dD_dc : ndarray, shape (N, n_controls, P)
         一阶偏导 ∂D̂/∂c_j
-    d2 : ndarray, shape (N, n_controls, n_controls, n_freq)
+    d2D_dc2 : ndarray, shape (N, n_controls, n_controls, P)
         二阶偏导 ∂²D̂/(∂c_i∂c_j)
     """
-    c = np.asarray(factors, dtype=float)
+    c = np.asarray(c, dtype=float)
     y = np.asarray(d_hat)
     n_samples, n_freq = y.shape
     n_controls = c.shape[1]
@@ -237,20 +237,20 @@ def build_control_derivative_bundle(
     c_keep = c[keep_mask]
     y_keep = y[keep_mask]
 
-    d1_keep = estimate_control_derivatives_scattered(
+    dD_dc_keep = estimate_control_derivatives_scattered(
         field=y_keep,
-        factors=c_keep,
+        c=c_keep,
         eps=eps,
     )
-    d2_keep = estimate_control_second_derivatives_scattered(
-        first_derivatives=d1_keep,
-        factors=c_keep,
+    d2D_dc2_keep = estimate_control_second_derivatives_scattered(
+        first_derivatives=dD_dc_keep,
+        c=c_keep,
         eps=eps,
     )
 
     # 回填到完整数组，锚点导数为 0
-    d1 = np.zeros((n_samples, n_controls, n_freq), dtype=complex)
-    d2 = np.zeros((n_samples, n_controls, n_controls, n_freq), dtype=complex)
-    d1[keep_mask] = d1_keep
-    d2[keep_mask] = d2_keep
-    return d1, d2
+    dD_dc = np.zeros((n_samples, n_controls, n_freq), dtype=complex)
+    d2D_dc2 = np.zeros((n_samples, n_controls, n_controls, n_freq), dtype=complex)
+    dD_dc[keep_mask] = dD_dc_keep
+    d2D_dc2[keep_mask] = d2D_dc2_keep
+    return dD_dc, d2D_dc2

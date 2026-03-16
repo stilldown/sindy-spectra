@@ -75,10 +75,10 @@ def pretty_name(name: str) -> str:
 
 def construct_pure_library(
     d_hat: np.ndarray,
-    d_d_c: np.ndarray,
-    d2_d_c: np.ndarray,
+    dD_dc: np.ndarray,
+    d2D_dc2: np.ndarray,
     omega: np.ndarray,
-    factors: np.ndarray,
+    c: np.ndarray,
     config: DiscoveryConfig,
 ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
     """构建 Euler 算子特征库（SVD 谱基投影，强形式）。
@@ -87,20 +87,20 @@ def construct_pure_library(
     --------
     **步骤 1：SVD 谱基**
 
-        D̂ ≈ U Σ Vᵀ，取前 K 列 → 谱基 P = Vt[:K, :] ∈ ℂ^{K×P}
+        D̂ ≈ U Σ Vᵀ，取前 K 列 → 谱基 Phi = Vt[:K, :] ∈ ℂ^{K×P}
 
     **步骤 2：投影系数**
 
-        A(c) = D̂(c, ·) · P† = D̂ @ P.conj().T,   A ∈ ℂ^{N×K}
+        A(c) = D̂(c, ·) · Phi† = D̂ @ Phi.conj().T,   A ∈ ℂ^{N×K}
 
     **步骤 3：有效频率**
 
-        ω_k = Re(diag(P diag(ω) P†))   （谱能量加权均值频率）
+        ω_k = Re(diag(Phi diag(ω) Phi†))   （谱能量加权均值频率）
 
     **步骤 4：Euler 算子**
 
-        L_i = (∂D̂/∂c_i @ P†) ⊘ A   （按元素复数除法，大振幅处才可靠）
-        Ξ_{ij} = (∂²D̂/(∂c_i∂c_j) @ P†) ⊘ A  -  L_i · L_j
+        L_i = (∂D̂/∂c_i @ Phi†) ⊘ A   （按元素复数除法，大振幅处才可靠）
+        Ξ_{ij} = (∂²D̂/(∂c_i∂c_j) @ Phi†) ⊘ A  -  L_i · L_j
 
     **步骤 5：f/g 分离**
 
@@ -116,10 +116,10 @@ def construct_pure_library(
     Parameters
     ----------
     d_hat   : (N, P)
-    d_d_c   : (N, n_controls, P)
-    d2_d_c  : (N, n_controls, n_controls, P)
-    omega   : (P,)  归一化频率轴 [0, 1]
-    factors : (N, n_controls)
+    dD_dc   : (N, n_controls, P)   — 一阶偏导 ∂D̂/∂c_j
+    d2D_dc2 : (N, n_controls, n_controls, P)   — 二阶偏导 ∂²D̂/(∂c_i∂c_j)
+    omega   : (P,)  归一化频率轴 ω ∈ [0, 1]
+    c       : (N, n_controls)   — 控制变量矩阵
     config  : DiscoveryConfig
 
     Returns
@@ -130,7 +130,7 @@ def construct_pure_library(
     omega_means    : ndarray (K,)     各谱基有效频率
     """
     n_samples, n_freq = d_hat.shape
-    n_controls = factors.shape[1]
+    n_controls = c.shape[1]
 
     # ── 步骤 1/2/3：SVD → 谱基 P → 投影系数 A → 有效频率 ω_k ──────────────
     U, s, Vt = svd(d_hat, full_matrices=False)
@@ -149,16 +149,16 @@ def construct_pure_library(
     )                                                             # (K,)
 
     # ── 步骤 4：Euler 算子 L_i 和 Ξ_{ij} ────────────────────────────────
-    # dA[:,j,:] = (∂D̂/∂c_j) @ P†
+    # dA[:,j,:] = (∂D̂/∂c_j) @ Phi†
     dA = np.zeros((n_samples, n_controls, k_eff), dtype=complex)
     for j in range(n_controls):
-        dA[:, j, :] = d_d_c[:, j, :] @ spectral_basis.conj().T
+        dA[:, j, :] = dD_dc[:, j, :] @ spectral_basis.conj().T
 
-    # d2A[:,i,j,:] = (∂²D̂/∂c_i∂c_j) @ P†
+    # d2A[:,i,j,:] = (∂²D̂/∂c_i∂c_j) @ Phi†
     d2A = np.zeros((n_samples, n_controls, n_controls, k_eff), dtype=complex)
     for i in range(n_controls):
         for j in range(n_controls):
-            d2A[:, i, j, :] = d2_d_c[:, i, j, :] @ spectral_basis.conj().T
+            d2A[:, i, j, :] = d2D_dc2[:, i, j, :] @ spectral_basis.conj().T
 
     # L_i = dA / A （对数导数）；屏蔽极小 A 避免数值爆炸
     weights = np.abs(A)

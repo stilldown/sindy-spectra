@@ -28,8 +28,8 @@ def _make_cartesian_grid(n_per_dim=5, n_controls=2, seed=7):
     rng = np.random.default_rng(seed)
     vals = [np.linspace(0.0, 1.0, n_per_dim) for _ in range(n_controls)]
     grids = np.meshgrid(*vals, indexing="ij")
-    factors = np.column_stack([g.ravel() for g in grids])
-    return factors
+    c = np.column_stack([g.ravel() for g in grids])
+    return c
 
 
 # ---------------------------------------------------------------------------
@@ -122,10 +122,10 @@ class TestBuildWeakFormLibraryShapes:
         rng = np.random.default_rng(10)
         N, n_freq = 10, 16
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
-        factors = rng.uniform(0.1, 2.0, (N, 1))
+        c = rng.uniform(0.1, 2.0, (N, 1))
         omega = np.linspace(0, 1, n_freq)
         # k_eff 参数已弃用（D̂@D† 始终是 N×N 方阵），此处保留以验证向后兼容性（参数被忽略）
-        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=5)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, c, omega, k_eff=5)
 
         # M = 1 + 1 + 1 = 3 (degree-2, 1 control)
         M = Psi.shape[0]
@@ -141,10 +141,10 @@ class TestBuildWeakFormLibraryShapes:
         rng = np.random.default_rng(11)
         N, n_freq = 16, 20
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
-        factors = rng.uniform(0.1, 2.0, (N, 2))
+        c = rng.uniform(0.1, 2.0, (N, 2))
         omega = np.linspace(0, 1, n_freq)
         # k_eff 参数已弃用：D̂ @ D† 是 N×N 方阵
-        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=8)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, c, omega, k_eff=8)
         # M = 1 + 2 + 2 + 1 = 6
         assert Psi.shape[0] == 6
         for val in lib.values():
@@ -156,9 +156,9 @@ class TestBuildWeakFormLibraryShapes:
         """库中必须包含 wln_f, wg, wL_1_f, wL_1_g, wL_2_f, wL_2_g。"""
         rng = np.random.default_rng(12)
         d_hat = rng.standard_normal((10, 12)) + 1j * rng.standard_normal((10, 12))
-        factors = rng.uniform(0.1, 2.0, (10, 2))
+        c = rng.uniform(0.1, 2.0, (10, 2))
         omega = np.linspace(0, 1, 12)
-        lib, _, _, _, _ = build_weak_form_library(d_hat, factors, omega)
+        lib, _, _, _, _ = build_weak_form_library(d_hat, c, omega)
         for key in ["wln_f", "wg", "wL_1_f", "wL_1_g", "wL_2_f", "wL_2_g"]:
             assert key in lib, f"Missing key: {key}"
 
@@ -167,10 +167,10 @@ class TestBuildWeakFormLibraryShapes:
         rng = np.random.default_rng(13)
         N, n_freq = 8, 5
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
-        factors = rng.uniform(0.1, 2.0, (N, 1))
+        c = rng.uniform(0.1, 2.0, (N, 1))
         omega = np.linspace(0, 1, n_freq)
         # k_eff 参数传入任何值均被忽略；D̂ @ D† 始终是 N×N 方阵
-        lib, _, _, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=100)
+        lib, _, _, basis, A = build_weak_form_library(d_hat, c, omega, k_eff=100)
         # 组分数 = N = 8，非 min(N, n_freq) = 5
         for val in lib.values():
             assert val.shape[1] == N, f"expected K=N={N}, got {val.shape[1]}"
@@ -208,20 +208,20 @@ class TestWeakFormIBPCorrectness:
         N_per = 8
         alpha = 2.5
         c_vals = np.linspace(0.0, 1.0, N_per)
-        factors = c_vals.reshape(-1, 1)
+        c = c_vals.reshape(-1, 1)
         n_freq = 10
         omega = np.linspace(0.01, 1.0, n_freq)
         P_spectral = np.exp(-omega)
         d_hat = np.exp(alpha * c_vals)[:, None] * P_spectral[None, :]   # (N, n_freq)
 
-        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=n_freq)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, c, omega, k_eff=n_freq)
 
         # 使用库返回的 A（= D̂ @ P†）重现期望值：
         # wL_1_f = Re( -(ibp_kernel @ ln_A) )
         # 其中 ibp_kernel[m, n] = ∂_{c_1}ψ_m(c_n)·c_1(n) + ψ_m(c_n)
         ln_A = np.log(A + 1e-12)
         Psi_arr, dPsi_arr, _ = _build_polynomial_test_functions_with_grads(
-            factors, degree=2
+            c, degree=2
         )
         ibp_kernel = dPsi_arr[0] * c_vals[None, :] + Psi_arr   # (M, N)
         expected_f = np.real(-(ibp_kernel @ ln_A))              # (M, K)
@@ -237,10 +237,10 @@ class TestWeakFormIBPCorrectness:
         n_freq = 8
         # D = complex constant (but nonzero)
         d_hat = np.full((N, n_freq), 2.0 + 0.5j)
-        factors = np.random.default_rng(20).uniform(0.1, 2.0, (N, 2))
+        c = np.random.default_rng(20).uniform(0.1, 2.0, (N, 2))
         omega = np.linspace(0, 1, n_freq)
 
-        lib, _, _, basis, A = build_weak_form_library(d_hat, factors, omega)
+        lib, _, _, basis, A = build_weak_form_library(d_hat, c, omega)
 
         # 所有输出必须有限
         for val in lib.values():
@@ -255,17 +255,17 @@ class TestWeakFormIBPCorrectness:
         N = 8
         n_freq = 6
         c_vals = np.linspace(0.5, 1.5, N)
-        factors = c_vals.reshape(-1, 1)
+        c = c_vals.reshape(-1, 1)
         omega = np.linspace(0.1, 1.0, n_freq)
         rng = np.random.default_rng(30)
         D = np.abs(rng.standard_normal((N, n_freq))) + 2.0
         d_hat = D.astype(complex)
 
-        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=n_freq)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, c, omega, k_eff=n_freq)
 
         # Component-separated log signal
         ln_A = np.log(A + 1e-12)                          # (N, K)
-        Psi_arr, dPsi_arr, _ = _build_polynomial_test_functions_with_grads(factors, degree=2)
+        Psi_arr, dPsi_arr, _ = _build_polynomial_test_functions_with_grads(c, degree=2)
 
         # For ψ_0 = 1: IBP kernel = ∂_{c_1}[1·c_1] = 1  (constant 1 for all n)
         ibp_psi0 = np.ones(N)
@@ -294,23 +294,23 @@ class TestWeakFormPipeline:
         c2_vals = np.linspace(0.0, 1.0, 4)
         c1_g, c2_g = np.meshgrid(c1_vals, c2_vals, indexing="ij")
         c1, c2 = c1_g.ravel(), c2_g.ravel()
-        factors = np.column_stack([c1, c2])
+        c = np.column_stack([c1, c2])
         wavelengths = np.linspace(380.0, 730.0, n_wl)
         x = wavelengths[None, :]
         s = (np.exp(-0.5 * ((x - (490 + 15 * c1[:, None])) / 18.0) ** 2)
              + 0.7 * np.exp(-0.5 * ((x - (570 - 12 * c2[:, None])) / 22.0) ** 2)
-             + 0.01 * rng.normal(size=(factors.shape[0], n_wl)))
-        return s, factors, wavelengths
+             + 0.01 * rng.normal(size=(c.shape[0], n_wl)))
+        return s, c, wavelengths
 
     def test_weak_form_pipeline_runs(self):
         """use_weak_form=True 管线应无错误地完成并产生合理输出。"""
-        s, factors, wl = self._make_spectra()
+        s, c, wl = self._make_spectra()
         cfg = DiscoveryConfig(
             k_mode="fixed", k_value=4,
             use_weak_form=True,
             weak_form_test_degree=2,
         )
-        out = run_discovery(s, factors, wl, cfg)
+        out = run_discovery(s, c, wl, cfg)
         assert out.Xi.ndim == 3
         assert out.A_matrix is not None
         assert out.S_real is not None
@@ -318,21 +318,21 @@ class TestWeakFormPipeline:
 
     def test_weak_form_operator_names_differ_from_strong(self):
         """弱形式库的算子名称应以 'w' 开头，与强形式不同。"""
-        s, factors, wl = self._make_spectra()
+        s, c, wl = self._make_spectra()
         cfg_weak = DiscoveryConfig(k_mode="fixed", k_value=3, use_weak_form=True)
         cfg_strong = DiscoveryConfig(k_mode="fixed", k_value=3)
-        out_weak = run_discovery(s, factors, wl, cfg_weak)
-        out_strong = run_discovery(s, factors, wl, cfg_strong)
+        out_weak = run_discovery(s, c, wl, cfg_weak)
+        out_strong = run_discovery(s, c, wl, cfg_strong)
         assert set(out_weak.operator_names) != set(out_strong.operator_names)
         # Weak form names start with "w"
         assert any("w" in n.lower() for n in out_weak.operator_names)
 
     def test_weak_form_k_eff_shape(self):
         """弱形式的 Xi 和 A_matrix 列数应等于样本数 N（D̂ @ D† 为 N×N 方阵）。"""
-        s, factors, wl = self._make_spectra()
-        n_samples = factors.shape[0]   # 4×4 网格 = 16 个样本
+        s, c, wl = self._make_spectra()
+        n_samples = c.shape[0]   # 4×4 网格 = 16 个样本
         cfg = DiscoveryConfig(k_mode="fixed", k_value=3, use_weak_form=True)
-        out = run_discovery(s, factors, wl, cfg)
+        out = run_discovery(s, c, wl, cfg)
         # 组分数 = 样本数（帽矩阵列数），与 k_value 无关
         assert out.Xi.shape[2] == n_samples
         assert out.A_matrix.shape[1] == n_samples
@@ -341,16 +341,16 @@ class TestWeakFormPipeline:
     def test_weak_form_no_d_d_c_used(self):
         """弱形式管线不应依赖 d_d_c（通过 monkeypatch 验证）。"""
         import unittest.mock as mock
-        s, factors, wl = self._make_spectra()
+        s, c, wl = self._make_spectra()
         cfg = DiscoveryConfig(k_mode="fixed", k_value=3, use_weak_form=True)
         # Patch build_control_derivative_bundle to return zeros — weak form should still work
         import opera.discovery.pipeline as pl_module
         with mock.patch(
             "opera.discovery.pipeline.build_control_derivative_bundle",
             return_value=(
-                np.zeros((factors.shape[0], factors.shape[1], 25)),
-                np.zeros((factors.shape[0], factors.shape[1], factors.shape[1], 25)),
+                np.zeros((c.shape[0], c.shape[1], 25)),
+                np.zeros((c.shape[0], c.shape[1], c.shape[1], 25)),
             ),
         ):
-            out = run_discovery(s, factors, wl, cfg)
+            out = run_discovery(s, c, wl, cfg)
         assert out.Xi.ndim == 3

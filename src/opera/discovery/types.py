@@ -7,8 +7,14 @@
 * P  — 正频率数，P = M//2 + 1
 * K  — 保留的谱主成分数（"组分数"）
 * J  — 算子库特征总数
-* c  — 控制向量，形状 (N, d)，d 为控制维度数
+* d  — 控制维度数（即控制变量个数）
+* c  — 控制矩阵，形状 (N, d)，每行为一个样本的控制向量
 * D̂  — 频域观测张量，形状 (N, P)，D̂ = rfft(S)
+* D† — D̂ 的 Moore-Penrose 伪逆，形状 (P, N)
+* A  — 投影系数矩阵；SVD 路径为 (N, K)，伪逆路径为 (N, N)
+* ω  — 归一化频率轴，形状 (P,)，ω ∈ [0, 1]
+* ξ  — SINDy-PI 系数向量
+* Θ  — Euler 算子特征矩阵，形状 (N, J)
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional

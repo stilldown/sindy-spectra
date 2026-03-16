@@ -59,7 +59,7 @@ from .operator import construct_inverse_library
 
 def run_discovery(
     spectra: np.ndarray,
-    factors: np.ndarray,
+    c: np.ndarray,
     wavelengths: np.ndarray,
     config: DiscoveryConfig | None = None,
 ) -> DiscoveryResult:
@@ -69,8 +69,8 @@ def run_discovery(
     ----------
     spectra : ndarray (N, M)
         N 个控制条件下的光谱矩阵（每行一条光谱）。
-    factors : ndarray (N, d)
-        控制变量矩阵（如浓度、温度等）。
+    c : ndarray (N, d)
+        控制变量矩阵 c ∈ ℝ^{N×d}（如浓度、温度等），d 为控制维度数。
         必须包含至少一行零控制（参考样本）。
     wavelengths : ndarray (M,)
         单调递增的波长轴，仅用于 IFFT 重建的点数。
@@ -86,7 +86,7 @@ def run_discovery(
     cfg = config or DiscoveryConfig()
 
     s  = np.asarray(spectra)
-    c  = np.asarray(factors)
+    c  = np.asarray(c)
     wl = np.asarray(wavelengths)
 
     validate_inputs(s, c, wl)
@@ -103,9 +103,9 @@ def run_discovery(
     t_fft = perf_counter()
 
     # ── 阶段 2：控制偏导 ∂D̂/∂c_j 和 ∂²D̂/(∂c_i∂c_j) ──────────────────────
-    d_d_c, d2_d_c = build_control_derivative_bundle(
+    dD_dc, d2D_dc2 = build_control_derivative_bundle(
         d_hat=d_hat,
-        factors=c,
+        c=c,
         eps=float(cfg.matrix.epsilon),
     )
     t_deriv = perf_counter()
@@ -118,7 +118,7 @@ def run_discovery(
         from .operator import build_weak_form_library
         lib, _psi_names, _Psi, basis, A = build_weak_form_library(
             d_hat=d_hat,
-            factors=c,
+            c=c,
             omega=omega,
             test_func_degree=cfg.weak_form_test_degree,
         )
@@ -127,17 +127,17 @@ def run_discovery(
         # 伪逆路径：D†∂D 对角线截断，不做谱基投影
         lib, basis, A, _w_means = construct_inverse_library(
             d_hat=d_hat,
-            d_d_c=d_d_c,
-            d2_d_c=d2_d_c,
+            dD_dc=dD_dc,
+            d2D_dc2=d2D_dc2,
             omega=omega,
-            factors=c,
+            c=c,
             config=cfg,
         )
         # 附加近似弱算子（psi=1 的均匀权重版本）
         try:
             from .operator import compute_weak_operators
             psi = np.ones(n_samples)
-            weak_lib = compute_weak_operators(d_hat, d_d_c, d2_d_c, c, psi)
+            weak_lib = compute_weak_operators(d_hat, dD_dc, d2D_dc2, c, psi)
             lib.update(weak_lib)
         except ImportError:
             pass
@@ -146,10 +146,10 @@ def run_discovery(
         # 默认路径（推荐）：SVD 谱基 → 按元素复对数 → Euler 算子
         lib, basis, A, _w_means = construct_pure_library(
             d_hat=d_hat,
-            d_d_c=d_d_c,
-            d2_d_c=d2_d_c,
+            dD_dc=dD_dc,
+            d2D_dc2=d2D_dc2,
             omega=omega,
-            factors=c,
+            c=c,
             config=cfg,
         )
     t_lib = perf_counter()

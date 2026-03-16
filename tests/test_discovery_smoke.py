@@ -14,9 +14,9 @@ def test_discovery_smoke_shapes():
     
     c1 = c1_grid.flatten()
     c2 = c2_grid.flatten()
-    factors = np.column_stack([c1, c2])
+    c = np.column_stack([c1, c2])
     
-    n_samples = factors.shape[0]
+    n_samples = c.shape[0]
     n_wl = 64
 
     wavelengths = np.linspace(380.0, 730.0, n_wl)
@@ -27,7 +27,7 @@ def test_discovery_smoke_shapes():
     spectra = s1 + s2 + 0.01 * rng.normal(size=(n_samples, n_wl))
 
     cfg = DiscoveryConfig(k_mode="fixed", k_value=3, sparsity_threshold=1e-2)
-    out = run_discovery(spectra, factors, wavelengths, cfg)
+    out = run_discovery(spectra, c, wavelengths, cfg)
 
     assert out.S_real.shape[0] == n_wl
     assert out.f_response_eval.shape[0] == n_samples
@@ -63,7 +63,7 @@ def test_discovery_smoke_shapes():
         k_mode="fixed", k_value=3, sparsity_threshold=1e-2,
         use_inverse_operator=True
     )
-    out2 = run_discovery(spectra, factors, wavelengths, cfg2)
+    out2 = run_discovery(spectra, c, wavelengths, cfg2)
     assert out2.A_matrix.shape[1] == out2.S_real.shape[1]
     # weak operators added so count may increase
     assert len(out2.operator_names) >= len(out.operator_names)
@@ -78,15 +78,15 @@ def test_compute_weak_operators_gradient_effect():
     K = 3
     n_freq = 10
     d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
-    d_d_c = rng.standard_normal((N, d, n_freq)) + 1j * rng.standard_normal((N, d, n_freq))
-    d2_d_c = rng.standard_normal((N, d, d, n_freq)) + 1j * rng.standard_normal((N, d, d, n_freq))
-    # construct simple grid of factors
+    dD_dc = rng.standard_normal((N, d, n_freq)) + 1j * rng.standard_normal((N, d, n_freq))
+    d2D_dc2 = rng.standard_normal((N, d, d, n_freq)) + 1j * rng.standard_normal((N, d, d, n_freq))
+    # construct simple grid of c (control variables)
     c1 = np.linspace(0,1,4)
     c2 = np.linspace(0,2,4)
     c1g, c2g = np.meshgrid(c1, c2, indexing='ij')
-    factors = np.column_stack([c1g.flatten(), c2g.flatten()])
+    c = np.column_stack([c1g.flatten(), c2g.flatten()])
     psi = np.linspace(0,1,N)
-    weak_lib = compute_weak_operators(d_hat, d_d_c, d2_d_c, factors, psi)
+    weak_lib = compute_weak_operators(d_hat, dD_dc, d2D_dc2, c, psi)
     # basic shape assertions
     assert isinstance(weak_lib, dict)
     assert all(mat.shape[0] == N for mat in weak_lib.values())
@@ -105,9 +105,9 @@ def test_discovery_three_controls():
     c1 = c1_grid.flatten()
     c2 = c2_grid.flatten()
     c3 = c3_grid.flatten()
-    factors = np.column_stack([c1, c2, c3])
+    c = np.column_stack([c1, c2, c3])
     
-    n_samples = factors.shape[0]
+    n_samples = c.shape[0]
     n_wl = 80
 
     wavelengths = np.linspace(380.0, 730.0, n_wl)
@@ -123,7 +123,7 @@ def test_discovery_three_controls():
     spectra = s1 + s2 + 0.01 * rng.normal(size=(n_samples, n_wl))
 
     cfg = DiscoveryConfig(k_mode="fixed", k_value=4, sparsity_threshold=1e-2)
-    out = run_discovery(spectra, factors, wavelengths, cfg)
+    out = run_discovery(spectra, c, wavelengths, cfg)
 
     assert out.f_response_eval.shape[0] == n_samples
     assert out.S_real.shape[0] == n_wl
@@ -147,9 +147,9 @@ def test_discovery_requires_zero_anchor_samples():
 
     c1 = c1_grid.flatten()
     c2 = c2_grid.flatten()
-    factors = np.column_stack([c1, c2])
+    c = np.column_stack([c1, c2])
 
-    n_samples = factors.shape[0]
+    n_samples = c.shape[0]
     n_wl = 48
 
     wavelengths = np.linspace(400.0, 700.0, n_wl)
@@ -160,7 +160,7 @@ def test_discovery_requires_zero_anchor_samples():
 
     cfg = DiscoveryConfig(k_mode="fixed", k_value=2, sparsity_threshold=1e-2)
     with pytest.raises(ValueError, match="未检测到零浓度样本"):
-        run_discovery(spectra, factors, wavelengths, cfg)
+        run_discovery(spectra, c, wavelengths, cfg)
 
 
 def test_fixed_k_constrains_xi_width_and_blocks_present():
@@ -174,9 +174,9 @@ def test_fixed_k_constrains_xi_width_and_blocks_present():
     c1 = c1_grid.flatten()
     c2 = c2_grid.flatten()
     c3 = c3_grid.flatten()
-    factors = np.column_stack([c1, c2, c3])
+    c = np.column_stack([c1, c2, c3])
     
-    n_samples = factors.shape[0]
+    n_samples = c.shape[0]
     n_wl = 72
 
     wavelengths = np.linspace(380.0, 730.0, n_wl)
@@ -187,7 +187,7 @@ def test_fixed_k_constrains_xi_width_and_blocks_present():
 
     # fixed 模式下仅由 k_value 决定；k_max 不应覆盖
     cfg = DiscoveryConfig(k_mode="fixed", k_value=2, k_max=6, sparsity_threshold=1e-2)
-    out = run_discovery(spectra, factors, wavelengths, cfg)
+    out = run_discovery(spectra, c, wavelengths, cfg)
 
     assert out.Xi.ndim == 3
     assert out.Xi.shape[2] == 2

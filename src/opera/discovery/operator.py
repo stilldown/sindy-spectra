@@ -47,10 +47,10 @@ from .types import DiscoveryConfig
 
 def construct_inverse_library(
     d_hat: np.ndarray,
-    d_d_c: np.ndarray,
-    d2_d_c: np.ndarray,
+    dD_dc: np.ndarray,
+    d2D_dc2: np.ndarray,
     omega: np.ndarray,
-    factors: np.ndarray,
+    c: np.ndarray,
     config: DiscoveryConfig,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
     r"""伪逆算子库（不做 SVD 谱基投影，直接乘以 D 逆得到完整帽矩阵）。
@@ -87,7 +87,7 @@ def construct_inverse_library(
     D_dag = np.linalg.pinv(d_hat)
 
     n_samples, n_freq = d_hat.shape
-    n_controls = factors.shape[1]
+    n_controls = c.shape[1]
 
     # D̂ @ D† 是 N×N 方阵，无需截断到任何 k_eff
     # 组分数 = 样本数 N，由矩阵乘法自然确定
@@ -107,7 +107,7 @@ def construct_inverse_library(
 
     # 一阶：diag(D† @ ∂D̂/∂c_j) → (P, P) 方阵的对角线
     # 取前 k_eff = N 个元素；当 P < N 时补零（保证形状为 (N, N)）
-    # D_dag: (P, N)，d_d_c[:,j,:]: (N, P)  →  D_dag @ d_d_c = (P, P) 方阵
+    # D_dag: (P, N)，dD_dc[:,j,:]: (N, P)  →  D_dag @ dD_dc = (P, P) 方阵
     def _pad_diag(mat: np.ndarray, target_len: int) -> np.ndarray:
         """取方阵对角线并补零/截断到 target_len 个元素。"""
         d = np.diag(mat)                              # (P,)
@@ -117,7 +117,7 @@ def construct_inverse_library(
         return padded                                 # (target_len,)
 
     for j in range(n_controls):
-        term = D_dag @ d_d_c[:, j, :]               # (P, P)
+        term = D_dag @ dD_dc[:, j, :]               # (P, P)
         diag_term = _pad_diag(term, k_eff)           # (N,)
         lib_j = np.tile(diag_term, (n_samples, 1))   # (N, N)
         library[f"L1_c{j+1}_f"] = np.real(lib_j)
@@ -126,7 +126,7 @@ def construct_inverse_library(
     # 二阶：diag(D† @ ∂²D̂/(∂c_i∂c_j))，同理补零到 N 个元素
     for i in range(n_controls):
         for j in range(n_controls):
-            term = D_dag @ d2_d_c[:, i, j, :]       # (P, P)
+            term = D_dag @ d2D_dc2[:, i, j, :]      # (P, P)
             diag_term = _pad_diag(term, k_eff)       # (N,)
             lib_f = np.tile(np.real(diag_term), (n_samples, 1))
             lib_g = np.tile(
@@ -142,17 +142,17 @@ from .preprocess import _detect_cartesian_grid
 
 
 def _build_polynomial_test_functions_with_grads(
-    factors: np.ndarray,
+    c: np.ndarray,
     degree: int = 2,
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     r"""构造多项式测试函数及其解析梯度。
 
-    对控制变量 ``factors`` 构建最高阶数为 ``degree`` 的多项式基函数，
+    对控制变量 ``c`` 构建最高阶数为 ``degree`` 的多项式基函数，
     并同时计算每个函数关于每个控制维度的**解析**一阶偏导。
 
     Parameters
     ----------
-    factors : ndarray, shape (N, n_controls)
+    c : ndarray, shape (N, n_controls)
         所有样本点的控制变量取值。
     degree : int
         多项式最高阶数（1 或 2），默认 2。
@@ -166,7 +166,7 @@ def _build_polynomial_test_functions_with_grads(
     names : list of str, length M
         各测试函数的名称。
     """
-    N, n_controls = factors.shape
+    N, n_controls = c.shape
     psi_list: List[np.ndarray] = []
     dpsi_list: List[np.ndarray] = []   # each: (n_controls, N)
     names: List[str] = []
@@ -178,7 +178,7 @@ def _build_polynomial_test_functions_with_grads(
 
     # 一阶: ψ = c_i,  ∂_{c_j}ψ = δ_{ij}
     for i in range(n_controls):
-        psi_list.append(factors[:, i].copy())
+        psi_list.append(c[:, i].copy())
         dp = np.zeros((n_controls, N))
         dp[i] = 1.0
         dpsi_list.append(dp)
@@ -187,19 +187,19 @@ def _build_polynomial_test_functions_with_grads(
     if degree >= 2:
         # 自身平方: ψ = c_i^2,  ∂_{c_j}ψ = 2c_i δ_{ij}
         for i in range(n_controls):
-            psi_list.append(factors[:, i] ** 2)
+            psi_list.append(c[:, i] ** 2)
             dp = np.zeros((n_controls, N))
-            dp[i] = 2.0 * factors[:, i]
+            dp[i] = 2.0 * c[:, i]
             dpsi_list.append(dp)
             names.append(f"c_{i + 1}^2")
 
         # 交叉项: ψ = c_i c_j (i < j),  ∂_{c_k}ψ = δ_{ki}c_j + δ_{kj}c_i
         for i in range(n_controls):
             for j in range(i + 1, n_controls):
-                psi_list.append(factors[:, i] * factors[:, j])
+                psi_list.append(c[:, i] * c[:, j])
                 dp = np.zeros((n_controls, N))
-                dp[i] = factors[:, j]
-                dp[j] = factors[:, i]
+                dp[i] = c[:, j]
+                dp[j] = c[:, i]
                 dpsi_list.append(dp)
                 names.append(f"c_{i + 1}*c_{j + 1}")
 
@@ -210,7 +210,7 @@ def _build_polynomial_test_functions_with_grads(
 
 def build_weak_form_library(
     d_hat: np.ndarray,
-    factors: np.ndarray,
+    c: np.ndarray,
     omega: np.ndarray,
     test_func_degree: int = 2,
     k_eff: int | None = None,
@@ -244,12 +244,12 @@ def build_weak_form_library(
 
     Parameters
     ----------
-    d_hat : ndarray, shape (N, n_freq)
+    d_hat : ndarray, shape (N, P)
         频域观测数据（rfft 结果）。
-    factors : ndarray, shape (N, n_controls)
+    c : ndarray, shape (N, n_controls)
         控制变量矩阵。
-    omega : ndarray, shape (n_freq,)
-        归一化频率轴（例如 ``np.linspace(0, 1, n_freq)``）。
+    omega : ndarray, shape (P,)
+        归一化频率轴 ω ∈ [0, 1]（例如 ``np.linspace(0, 1, P)``）。
     test_func_degree : int
         测试函数的多项式阶数，默认 2。
     k_eff : int or None
@@ -269,13 +269,13 @@ def build_weak_form_library(
         测试函数名称列表。
     Psi : ndarray, shape (M, N)
         测试函数在所有样本点的取值矩阵。
-    spectral_basis : ndarray, shape (N, n_freq)
+    spectral_basis : ndarray, shape (N, P)
         D†-基（D†全部 N 列的转置），供 pipeline 重用。
     A : ndarray, shape (N, N)
         完整帽矩阵 D̂ @ D†。
     """
     N, n_freq = d_hat.shape
-    n_controls = factors.shape[1]
+    n_controls = c.shape[1]
 
     # k_eff 和 spectral_basis 参数已弃用：D̂ @ D† 是 N×N 方阵，组分数由矩阵乘法自然确定
     if k_eff is not None or spectral_basis is not None:
@@ -307,7 +307,7 @@ def build_weak_form_library(
 
     # ── 步骤 4：多项式测试函数及其解析梯度 ────────────────────────────────
     Psi, dPsi, names = _build_polynomial_test_functions_with_grads(
-        factors, degree=test_func_degree
+        c, degree=test_func_degree
     )
     # Psi:  (M, N)
     # dPsi: (n_controls, M, N)
@@ -315,15 +315,15 @@ def build_weak_form_library(
     library: Dict[str, np.ndarray] = {}
 
     # -------------------------------------------------------------------
-    # 零阶项: ⟨ln A_k, ψ_m⟩ = Psi @ ln_A  → (M, K)
+    # 零阶项: ⟨ln A_k, ψ_m⟩ = Psi @ ln_A  → (M, N)
     # Re(·) = 对数幅度内积（f 分量），-Im(·)/ω_k = 相位内积（g 分量）
     # -------------------------------------------------------------------
-    w0 = Psi @ ln_A                                     # (M, K)
+    w0 = Psi @ ln_A                                     # (M, N)
     library["wln_f"] = np.real(w0)
     library["wg"]    = -np.imag(w0) / (omega_means[None, :] + 1e-9)
 
     # -------------------------------------------------------------------
-    # 一阶弱 Euler 算子 (IBP, 无需 d_d_c):
+    # 一阶弱 Euler 算子 (IBP, 无需 dD_dc):
     #
     #   ⟨c_i ∂_{c_i} ln A_k, ψ_m⟩
     #       = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
@@ -331,23 +331,23 @@ def build_weak_form_library(
     # 导数转移到光滑测试函数 ψ_m 上，完全避免对含噪数据 D̂ 求导。
     # -------------------------------------------------------------------
     for i in range(n_controls):
-        ci = factors[:, i]                              # (N,)
+        ci = c[:, i]                                    # (N,)
         # IBP 核: ∂_{c_i}[ψ_m(c) · c_i] = ∂_{c_i}ψ_m · c_i + ψ_m
         ibp_i = dPsi[i] * ci[None, :] + Psi            # (M, N)
-        wLi = -(ibp_i @ ln_A)                          # (M, K)
+        wLi = -(ibp_i @ ln_A)                          # (M, N)
         library[f"wL_{i + 1}_f"] = np.real(wLi)
         library[f"wL_{i + 1}_g"] = -np.imag(wLi) / (omega_means[None, :] + 1e-9)
 
     return library, names, Psi, spectral_basis, A
 
 
-def _compute_control_gradient(field: np.ndarray, factors: np.ndarray) -> np.ndarray:
+def _compute_control_gradient(field: np.ndarray, c: np.ndarray) -> np.ndarray:
     """在控制空间上计算标量场 ``field`` 的梯度。
 
-    仅支持因子构成笛卡尔网格的情况，返回形状 ``(N, d)``。
+    仅支持 c 构成笛卡尔网格的情况，返回形状 ``(N, d)``。
     """
     y = np.asarray(field)
-    c = np.asarray(factors, dtype=float)
+    c = np.asarray(c, dtype=float)
     n_samples, n_dims = c.shape
 
     is_grid, uniq_vals, grid_shape, sort_idx = _detect_cartesian_grid(c)
@@ -375,9 +375,9 @@ def _compute_control_gradient(field: np.ndarray, factors: np.ndarray) -> np.ndar
 
 def compute_weak_operators(
     d_hat: np.ndarray,
-    d_d_c: np.ndarray,
-    d2_d_c: np.ndarray,
-    factors: np.ndarray,
+    dD_dc: np.ndarray,
+    d2D_dc2: np.ndarray,
+    c: np.ndarray,
     psi: np.ndarray,
 ) -> Dict[str, np.ndarray]:
     """构造弱形式算子矩阵（加权积分版本）。
@@ -388,24 +388,24 @@ def compute_weak_operators(
     2. 用 ``psi`` 对每个算子直接加权；
     3. 对一阶算子再减去 ``psi`` 的控制梯度贡献以实现分部积分。
 
-    返回的库格式与 ``construct_pure_library`` 兼容，形状均为 ``(N,K)``。
+    返回的库格式与 ``construct_pure_library`` 兼容，形状均为 ``(N,N)``。
     """
     lib, basis, A, omega_means = construct_inverse_library(
         d_hat=d_hat,
-        d_d_c=d_d_c,
-        d2_d_c=d2_d_c,
+        dD_dc=dD_dc,
+        d2D_dc2=d2D_dc2,
         omega=np.linspace(0,1,d_hat.shape[1]),
-        factors=factors,
+        c=c,
         config=DiscoveryConfig(),
     )
 
     n_samples = d_hat.shape[0]
     psi = np.asarray(psi, dtype=float).reshape(n_samples)
-    psi_grad = _compute_control_gradient(psi, factors)
+    psi_grad = _compute_control_gradient(psi, c)
 
     # rebuild pseudoinverse since we need it here as well
     D_dag = np.linalg.pinv(d_hat)
-    n_controls = factors.shape[1]
+    n_controls = c.shape[1]
 
     # 组分数 = 样本数（与 construct_inverse_library 保持一致，帽矩阵为 N×N 方阵）
     k_eff = n_samples
@@ -424,7 +424,7 @@ def compute_weak_operators(
     # compute first-order weak operators and store basic L1 matrices
     L1_basic = []
     for j in range(n_controls):
-        raw1 = D_dag @ d_d_c[:, j, :]  # shape (n_freq, n_freq)
+        raw1 = D_dag @ dD_dc[:, j, :]  # shape (P, P)
         m = tile_diag(raw1, k_eff, n_samples)
         L1_basic.append(m)
         # weak: psi*m - psi_grad_j（分部积分修正，对每个频率分量减去标量梯度）
@@ -433,7 +433,7 @@ def compute_weak_operators(
     # compute second-order and cross operators
     for i in range(n_controls):
         for j in range(n_controls):
-            raw2 = D_dag @ d2_d_c[:, i, j, :]  # shape (n_freq, n_freq)
+            raw2 = D_dag @ d2D_dc2[:, i, j, :]  # shape (P, P)
             m2 = tile_diag(raw2, k_eff, n_samples)
             cross_term = L1_basic[i] * L1_basic[j]
             if i == j:
