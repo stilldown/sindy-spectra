@@ -111,21 +111,17 @@ def run_discovery(
 
     # ── 阶段 3：算子特征库 Θ ────────────────────────────────────────────────
     if cfg.use_weak_form:
-        # 真弱形式：IBP 内积 ⟨c_i ∂_{c_i} ln D, ψ_m⟩，无需数值微分
+        # 弱形式路径：先 SVD 分离组分，再对 ln A_k 做 IBP 内积（无需数值微分）
+        # build_weak_form_library 内部做 SVD → 投影 → 对数 → IBP，
+        # 返回 basis 和 A 供后续重建使用，无需在此重新计算 SVD。
         from .operator import build_weak_form_library
-        lib, _psi_names, _Psi = build_weak_form_library(
+        lib, _psi_names, _Psi, basis, A = build_weak_form_library(
             d_hat=d_hat,
             factors=c,
             omega=omega,
             test_func_degree=cfg.weak_form_test_degree,
             k_eff=int(cfg.k_value) if cfg.k_mode == "fixed" else int(cfg.k_max),
         )
-        # 弱形式路径：谱基由 SVD 提供（占位），A 为投影系数
-        from scipy.linalg import svd as _svd
-        _, _, Vt = _svd(d_hat, full_matrices=False)
-        k_w = list(lib.values())[0].shape[1]
-        basis = Vt[:k_w, :]
-        A = d_hat @ basis.conj().T
 
     elif cfg.use_inverse_operator:
         # 伪逆路径：D†∂D 对角线截断，不做谱基投影

@@ -20,7 +20,7 @@
 2. 三路管线选择：
    - **默认（pure Euler）**：`construct_pure_library` → SVD谱基投影，`solve_nullspace`
    - **伪逆（`use_inverse_operator=True`）**：`construct_inverse_library` → 伪逆算子，合并弱算子
-   - **真弱形式（`use_weak_form=True`）**：`build_weak_form_library` → IBP 无需数值微分
+   - **弱形式+SVD（`use_weak_form=True`）**：`build_weak_form_library` → SVD投影分离组分后 IBP，无需数值微分
 3. `solve_nullspace` 提取 f/g 零空间系数，组装 `Xi`。
 4. IFFT 谱基 → `S_real`（纯谱），投影系数 A → `f_response_eval`。
 5. 诊断与输出封装为 `DiscoveryResult`。
@@ -30,20 +30,30 @@
 `operator.py` 中有两个相关函数：
 
 - `compute_weak_operators`：近似弱形式（仍需 `d_d_c`），用于 `use_inverse_operator=True` 路径，本质是强形式算子加权。
-- `build_weak_form_library`：**真正的弱形式**实现：
+- `build_weak_form_library`：**弱形式 + SVD 组分分离**实现：
   - **不需要 `d_d_c`**，仅使用 `d_hat`（原始频域数据）
-  - 通过分部积分（IBP）将导数从含噪数据 D 转移到光滑测试函数 ψ_m：
-    ```
-    ⟨L_i, ψ_m⟩(ω) = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln D(c_n, ω)
-    ```
-  - 测试函数的梯度 `∂_{c_i}ψ_m` 由多项式解析计算（精确、无噪声）
-  - 库形状 `(M, k_eff)`，与 `solve_nullspace` 直接兼容（M 充当"样本"轴）
+  - **关键步骤：先用 SVD 分离组分，再做 IBP**
+
+  > 若直接对 `ln D̂(c,ω)` 做 IBP，由于 D̂ 是多组分叠加，无法分离各组分的方程。
+  > 正确做法是先投影到 SVD 谱基将组分分离，再对每个组分的对数投影系数 `ln A_k(c)` 做 IBP。
+
+  完整算法步骤：
+  ```
+  步骤 1：SVD 谱基    P = Vt[:K, :] ∈ ℂ^{K×P}
+  步骤 2：投影        A = D̂ @ P†  ∈ ℂ^{N×K}   （各列 = 单一组分响应）
+  步骤 3：对数        ln_A = log(A + ε)  ∈ ℂ^{N×K}
+  步骤 4：IBP 内积    ⟨c_i ∂_{c_i} ln A_k, ψ_m⟩
+                        = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
+  ```
+  - 测试函数梯度 `∂_{c_i}ψ_m` 由多项式解析计算（精确、无噪声）
+  - 库形状 `(M, K)`，与 `solve_nullspace` 直接兼容（M 充当"样本"轴，K = 谱组分数）
+  - 函数返回 5 个值：`(library, names, Psi, spectral_basis, A)`
 
 ### 配置方式
 
 ```python
 cfg = DiscoveryConfig(
-    use_weak_form=True,          # 启用真正弱形式管线
+    use_weak_form=True,          # 启用弱形式+SVD组分分离管线
     weak_form_test_degree=2,     # 测试函数多项式阶数（默认 2）
     k_mode="fixed",
     k_value=3,
@@ -122,7 +132,7 @@ out = run_discovery(spectra, factors, wavelengths, cfg)
 |------|------|------|
 | `construct_inverse_library` | 🟡 | 伪逆算子库，`use_inverse_operator=True` 时启用 |
 | `_build_polynomial_test_functions_with_grads` | ✅ | 多项式测试函数及解析梯度 |
-| `build_weak_form_library` | ✅ | 真正弱形式（IBP，无需 d_d_c），`use_weak_form=True` 时启用 |
+| `build_weak_form_library` | ✅ | **弱形式+SVD**：先投影分离组分再 IBP，`use_weak_form=True` 时启用；返回 `(lib, names, Psi, basis, A)` |
 | `compute_weak_operators` | 🟡 | 近似弱形式（仍需 d_d_c），`use_inverse_operator=True` 路径使用 |
 
 ### 四、符号识别（`symbolic.py`）

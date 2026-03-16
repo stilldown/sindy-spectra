@@ -1,10 +1,17 @@
 """Tests for the TRUE weak-form operator library (`build_weak_form_library`).
 
 Key mathematical property being tested:
-    Strong form: L_i(c, ω) = c_i · ∂_{c_i} ln D(c, ω)
-    Weak form:   ⟨L_i, ψ_m⟩(ω) = -Σ_n (∂_{c_i}ψ_m · c_i + ψ_m) · ln D(c_n, ω)
+    The weak-form pipeline first separates spectral components via SVD projection,
+    then applies IBP inner products to the component-separated log-projections:
 
-The two must agree when ln D is smooth (exact IBP recovery test).
+        Step 1: SVD basis  P = Vt[:K, :]
+        Step 2: Projection A = D̂ @ P†        (N, K) — each column is one pure component
+        Step 3: Log        ln_A = log(A + ε)
+        Step 4: IBP inner product
+            ⟨L_i^(k), ψ_m⟩ = -Σ_n (∂_{c_i}ψ_m·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
+
+    Without the SVD projection step, IBP would operate on ln D̂(c,ω) — the mixed
+    superposition — and cannot separate individual component equations.
 """
 import numpy as np
 import pytest
@@ -122,12 +129,15 @@ class TestBuildWeakFormLibraryShapes:
         factors = rng.uniform(0.1, 2.0, (N, 1))
         omega = np.linspace(0, 1, n_freq)
         k = 5
-        lib, names, Psi = build_weak_form_library(d_hat, factors, omega, k_eff=k)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=k)
 
         # M = 1 + 1 + 1 = 3 (degree-2, 1 control)
         M = Psi.shape[0]
         assert M == 3
         assert Psi.shape == (3, N)
+        # Library entries are (M, K) where K = k SVD components
+        assert basis.shape == (k, n_freq)
+        assert A.shape == (N, k)
         for key, val in lib.items():
             assert val.shape == (M, k), f"{key}: expected ({M},{k}), got {val.shape}"
 
@@ -137,11 +147,12 @@ class TestBuildWeakFormLibraryShapes:
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
         factors = rng.uniform(0.1, 2.0, (N, 2))
         omega = np.linspace(0, 1, n_freq)
-        lib, names, Psi = build_weak_form_library(d_hat, factors, omega, k_eff=8)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=8)
         # M = 1 + 2 + 2 + 1 = 6
         assert Psi.shape[0] == 6
         for val in lib.values():
             assert val.shape[0] == 6
+        assert A.shape == (N, 8)
 
     def test_library_keys_present(self):
         """库中必须包含 wln_f, wg, wL_1_f, wL_1_g, wL_2_f, wL_2_g。"""
@@ -149,19 +160,24 @@ class TestBuildWeakFormLibraryShapes:
         d_hat = rng.standard_normal((10, 12)) + 1j * rng.standard_normal((10, 12))
         factors = rng.uniform(0.1, 2.0, (10, 2))
         omega = np.linspace(0, 1, 12)
-        lib, _, _ = build_weak_form_library(d_hat, factors, omega)
+        lib, _, _, _, _ = build_weak_form_library(d_hat, factors, omega)
         for key in ["wln_f", "wg", "wL_1_f", "wL_1_g", "wL_2_f", "wL_2_g"]:
             assert key in lib, f"Missing key: {key}"
 
-    def test_k_eff_capped_at_n_freq(self):
-        """请求 k_eff 超出 n_freq 时应截断。"""
+    def test_k_eff_capped_at_svd_rank(self):
+        """请求 k_eff 超出 min(N, n_freq) 时应截断到 SVD 秩。"""
         rng = np.random.default_rng(13)
-        d_hat = rng.standard_normal((8, 5)) + 1j * rng.standard_normal((8, 5))
-        factors = rng.uniform(0.1, 2.0, (8, 1))
-        omega = np.linspace(0, 1, 5)
-        lib, _, _ = build_weak_form_library(d_hat, factors, omega, k_eff=100)
+        N, n_freq = 8, 5
+        d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
+        factors = rng.uniform(0.1, 2.0, (N, 1))
+        omega = np.linspace(0, 1, n_freq)
+        lib, _, _, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=100)
+        # SVD of (8,5) has at most 5 singular values
+        expected_k = min(N, n_freq)
         for val in lib.values():
-            assert val.shape[1] == 5
+            assert val.shape[1] == expected_k
+        assert basis.shape[0] == expected_k
+        assert A.shape[1] == expected_k
 
     def test_no_d_d_c_required(self):
         """build_weak_form_library 的签名不含 d_d_c。"""
@@ -176,27 +192,20 @@ class TestBuildWeakFormLibraryShapes:
 # ---------------------------------------------------------------------------
 
 class TestWeakFormIBPCorrectness:
-    """验证弱形式 IBP 公式与强形式（数值梯度）在无噪声数据上给出一致结果。"""
+    """验证弱形式 IBP 公式与 SVD 投影后的对数系数一致。
 
-    def _strong_form_L1(self, d_hat, factors, omega_k, i):
-        """强形式 L_i(c,ω) = c_i ∂_{c_i} ln D，使用数值梯度计算。"""
-        from opera.discovery.preprocess import estimate_control_derivatives_scattered
-        ln_D_real = np.real(np.log(d_hat[:, :len(omega_k)] + 1e-12))
-        # 对 ln D 的实部计算数值梯度，然后乘以 c_i
-        d_lnD_dc = estimate_control_derivatives_scattered(
-            field=ln_D_real, factors=factors
-        )
-        return factors[:, i:i+1] * d_lnD_dc[:, i, :]
+    新版弱形式先做 SVD 投影分离组分（A = D̂ @ P†），再对
+    ln_A = log(A + ε) 做 IBP 内积。
+    """
 
     def test_pure_f_recovery(self):
-        """验证弱形式输出精确等于 IBP 离散公式的计算结果。
+        """验证弱形式输出精确等于 IBP 离散公式（以 ln_A 为信号）。
 
-        对 D(c,ω) = exp(α·c_1)·P(ω) 这类数据，弱形式算子的输出应满足：
-            wL_1_f[m, k] = Re( -Σ_n (∂_{c_1}ψ_m(c_n)·c_1(n) + ψ_m(c_n)) · ln D(c_n, ω_k) )
-
-        注意：弱形式（IBP）与强形式点乘 Σ_n ψ_m(c_n)·L_1(c_n, ω) 之间存在边界项之差，
-        因此它们不相等——这是有限域上非紧支撑测试函数的正常行为（WSINDy 中
-        通常要求测试函数在边界处为零以消除边界项）。本测试只验证 IBP 公式本身。
+        对 D(c,ω) = exp(α·c_1)·P_spectral(ω) 这类数据：
+        - SVD 给出一个主成分，A ≈ exp(α·c_1) * scale
+        - ln_A ≈ α·c_1 + const（实数）
+        - 弱形式算子输出应满足：
+            wL_1_f[m, k] = Re( -Σ_n (∂_{c_1}ψ_m·c_1(n) + ψ_m(c_n)) · ln_A(c_n, k) )
         """
         N_per = 8
         alpha = 2.5
@@ -204,28 +213,28 @@ class TestWeakFormIBPCorrectness:
         factors = c_vals.reshape(-1, 1)
         n_freq = 10
         omega = np.linspace(0.01, 1.0, n_freq)
-        P = np.exp(-omega)
-        d_hat = np.exp(alpha * c_vals)[:, None] * P[None, :]   # (N, n_freq)
+        P_spectral = np.exp(-omega)
+        d_hat = np.exp(alpha * c_vals)[:, None] * P_spectral[None, :]   # (N, n_freq)
 
-        lib, names, Psi = build_weak_form_library(d_hat, factors, omega, k_eff=n_freq)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=n_freq)
 
-        # 用相同公式手动复现期望值：
-        # wL_1_f = Re( -(ibp_kernel @ ln_D) )
+        # 使用库返回的 A（= D̂ @ P†）重现期望值：
+        # wL_1_f = Re( -(ibp_kernel @ ln_A) )
         # 其中 ibp_kernel[m, n] = ∂_{c_1}ψ_m(c_n)·c_1(n) + ψ_m(c_n)
-        ln_D = np.log(d_hat + 1e-12)
+        ln_A = np.log(A + 1e-12)
         Psi_arr, dPsi_arr, _ = _build_polynomial_test_functions_with_grads(
             factors, degree=2
         )
         ibp_kernel = dPsi_arr[0] * c_vals[None, :] + Psi_arr   # (M, N)
-        expected_f = np.real(-(ibp_kernel @ ln_D))              # (M, n_freq)
+        expected_f = np.real(-(ibp_kernel @ ln_A))              # (M, K)
 
         np.testing.assert_allclose(
             lib["wL_1_f"], expected_f, atol=1e-10,
-            err_msg="wL_1_f does not match IBP formula -(ibp_kernel @ ln_D)"
+            err_msg="wL_1_f does not match IBP formula -(ibp_kernel @ ln_A)"
         )
 
     def test_zero_operator_for_constant_D(self):
-        """若 D(c,ω) = 常数（与 c 无关），则所有 wL_i = 0。"""
+        """若 D(c,ω) = 常数（与 c 无关），则所有 wL_i 的有限性。"""
         N = 12
         n_freq = 8
         # D = complex constant (but nonzero)
@@ -233,23 +242,16 @@ class TestWeakFormIBPCorrectness:
         factors = np.random.default_rng(20).uniform(0.1, 2.0, (N, 2))
         omega = np.linspace(0, 1, n_freq)
 
-        lib, _, _ = build_weak_form_library(d_hat, factors, omega)
+        lib, _, _, basis, A = build_weak_form_library(d_hat, factors, omega)
 
-        # ln D is constant in c → L_i = 0 for all i
-        # ⟨L_i, ψ_m⟩ = -Σ_n (∂_{c_i}ψ_m·c_i + ψ_m) · [const] = -[const]·Σ_n (...)
-        # But ⟨L_i, ψ_m⟩ should be 0, because L_i = c_i ∂_{c_i} ln D = 0
-        # Our IBP: -(ibp_i @ ln_D) = -ibp_i @ (const) = -const * Σ_n ibp_i[m,n]
-        # This is NOT zero in general unless the IBP kernel sums to zero.
-        # The IBP kernel Σ_n (∂_{c_i}ψ_m·c_i + ψ_m) is NOT zero for arbitrary ψ_m.
-        # So this test checks a different property: agreement with direct formula.
-        # Here we just check the shapes are right and values are finite.
+        # 所有输出必须有限
         for val in lib.values():
             assert np.all(np.isfinite(val))
 
     def test_ibp_identity(self):
-        """手动验证 IBP 等式：⟨c_i ∂_{c_i} ln D, ψ_m⟩ = -⟨ln D, ∂_{c_i}[ψ_m c_i]⟩。
-        
-        对简单的 1D 均匀网格，数值和分析结果应完全一致。
+        """验证 IBP 等式：lib["wL_1_f"][m,k] == Re(-(ibp_kernel[m,:] @ ln_A[:,k]))。
+
+        IBP 在组分分离的 ln_A 信号上应精确成立（数值误差 < 1e-10）。
         """
         # 1D grid: c ∈ [0.5, 1.5], uniform
         N = 8
@@ -258,27 +260,28 @@ class TestWeakFormIBPCorrectness:
         factors = c_vals.reshape(-1, 1)
         omega = np.linspace(0.1, 1.0, n_freq)
         rng = np.random.default_rng(30)
-        # D: positive real for easy log
         D = np.abs(rng.standard_normal((N, n_freq))) + 2.0
         d_hat = D.astype(complex)
-        ln_D = np.log(D)  # real (N, n_freq)
 
-        lib, names, Psi = build_weak_form_library(d_hat, factors, omega, k_eff=n_freq)
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=n_freq)
 
-        # IBP kernel for ψ_m = 1: ∂_{c_1}[1·c_1] = 1
-        # So wL_1[0, :] = -Σ_n 1 · ln D[n, :] = -sum(ln_D, axis=0)
-        psi0_ibp = np.ones(N)  # kernel for ψ_0 = 1
-        expected = -(psi0_ibp @ ln_D)  # (n_freq,)
+        # Component-separated log signal
+        ln_A = np.log(A + 1e-12)                          # (N, K)
+        Psi_arr, dPsi_arr, _ = _build_polynomial_test_functions_with_grads(factors, degree=2)
+
+        # For ψ_0 = 1: IBP kernel = ∂_{c_1}[1·c_1] = 1  (constant 1 for all n)
+        ibp_psi0 = np.ones(N)
+        expected_0 = np.real(-(ibp_psi0 @ ln_A))         # (K,)
         np.testing.assert_allclose(
-            lib["wL_1_f"][0, :], np.real(expected), atol=1e-10
+            lib["wL_1_f"][0, :], expected_0, atol=1e-10
         )
 
-        # IBP kernel for ψ_m = c_1: ∂_{c_1}[c_1·c_1] = 2c_1
-        psi1_ibp = 2.0 * c_vals  # kernel for ψ_1 = c_1
-        expected1 = -(psi1_ibp @ ln_D)
+        # For ψ_1 = c_1: IBP kernel = ∂_{c_1}[c_1·c_1] = 2·c_1
+        ibp_psi1 = 2.0 * c_vals
+        expected_1 = np.real(-(ibp_psi1 @ ln_A))         # (K,)
         idx_c1 = names.index("c_1")
         np.testing.assert_allclose(
-            lib["wL_1_f"][idx_c1, :], np.real(expected1), atol=1e-10
+            lib["wL_1_f"][idx_c1, :], expected_1, atol=1e-10
         )
 
 
