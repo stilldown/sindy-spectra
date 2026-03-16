@@ -1,13 +1,12 @@
-"""Tests for the weak-form operator library (`build_weak_form_library`).
+"""弱形式算子库测试（`build_weak_form_library`）。
 
-Key mathematical property being tested:
-    The weak-form pipeline computes the projection coefficient A by directly
-    multiplying by the Moore-Penrose pseudoinverse D†, without SVD separation:
+核心数学特性：
+    弱形式管线通过直接乘以 Moore-Penrose 伪逆 D† 得到 N×N 帽矩阵，无需 SVD 分离，也无需截断：
 
-        Step 1: Pseudoinverse  D† = pinv(D̂)
-        Step 2: Projection     A = D̂ @ D†[:, :K]   (N, K) — first K columns of hat matrix
-        Step 3: Log            ln_A = log(A + ε)   ("another way" vs. raw-bin log)
-        Step 4: IBP inner product
+        步骤 1：伪逆   D† = pinv(D̂)       D̂ 形状 (N, P)，D† 形状 (P, N)
+        步骤 2：帽矩阵  A = D̂ @ D†         (N, N) — 方阵，无需截断到组分数
+        步骤 3：对数    ln_A = log(A + ε)   逐元素复数对数（"lnA 的另一种实现方式"）
+        步骤 4：IBP 内积
             ⟨L_i^(k), ψ_m⟩ = -Σ_n (∂_{c_i}ψ_m·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
 """
 import numpy as np
@@ -125,18 +124,18 @@ class TestBuildWeakFormLibraryShapes:
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
         factors = rng.uniform(0.1, 2.0, (N, 1))
         omega = np.linspace(0, 1, n_freq)
-        k = 5
-        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=k)
+        # k_eff 参数已弃用（D̂@D† 始终是 N×N 方阵），此处保留以验证向后兼容性（参数被忽略）
+        lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=5)
 
         # M = 1 + 1 + 1 = 3 (degree-2, 1 control)
         M = Psi.shape[0]
         assert M == 3
         assert Psi.shape == (3, N)
-        # Library entries are (M, K) where K = k SVD components
-        assert basis.shape == (k, n_freq)
-        assert A.shape == (N, k)
+        # D̂ @ D† 是 N×N 方阵：basis 形状为 (N, n_freq)，A 形状为 (N, N)
+        assert basis.shape == (N, n_freq)
+        assert A.shape == (N, N)
         for key, val in lib.items():
-            assert val.shape == (M, k), f"{key}: expected ({M},{k}), got {val.shape}"
+            assert val.shape == (M, N), f"{key}: expected ({M},{N}), got {val.shape}"
 
     def test_output_shapes_two_controls(self):
         rng = np.random.default_rng(11)
@@ -144,12 +143,14 @@ class TestBuildWeakFormLibraryShapes:
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
         factors = rng.uniform(0.1, 2.0, (N, 2))
         omega = np.linspace(0, 1, n_freq)
+        # k_eff 参数已弃用：D̂ @ D† 是 N×N 方阵
         lib, names, Psi, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=8)
         # M = 1 + 2 + 2 + 1 = 6
         assert Psi.shape[0] == 6
         for val in lib.values():
             assert val.shape[0] == 6
-        assert A.shape == (N, 8)
+        # A 是 N×N 方阵（帽矩阵）
+        assert A.shape == (N, N)
 
     def test_library_keys_present(self):
         """库中必须包含 wln_f, wg, wL_1_f, wL_1_g, wL_2_f, wL_2_g。"""
@@ -161,20 +162,20 @@ class TestBuildWeakFormLibraryShapes:
         for key in ["wln_f", "wg", "wL_1_f", "wL_1_g", "wL_2_f", "wL_2_g"]:
             assert key in lib, f"Missing key: {key}"
 
-    def test_k_eff_capped_at_matrix_rank(self):
-        """请求 k_eff 超出 min(N, n_freq) 时应截断到矩阵秩。"""
+    def test_full_hat_matrix_no_truncation(self):
+        """D̂ @ D† 是 N×N 方阵，组分数 = N（样本数），无需截断到 min(N, n_freq)。"""
         rng = np.random.default_rng(13)
         N, n_freq = 8, 5
         d_hat = rng.standard_normal((N, n_freq)) + 1j * rng.standard_normal((N, n_freq))
         factors = rng.uniform(0.1, 2.0, (N, 1))
         omega = np.linspace(0, 1, n_freq)
+        # k_eff 参数传入任何值均被忽略；D̂ @ D† 始终是 N×N 方阵
         lib, _, _, basis, A = build_weak_form_library(d_hat, factors, omega, k_eff=100)
-        # D† of (8,5) gives at most min(N, n_freq) = 5 independent components
-        expected_k = min(N, n_freq)
+        # 组分数 = N = 8，非 min(N, n_freq) = 5
         for val in lib.values():
-            assert val.shape[1] == expected_k
-        assert basis.shape[0] == expected_k
-        assert A.shape[1] == expected_k
+            assert val.shape[1] == N, f"expected K=N={N}, got {val.shape[1]}"
+        assert basis.shape == (N, n_freq)
+        assert A.shape == (N, N)
 
     def test_no_d_d_c_required(self):
         """build_weak_form_library 的签名不含 d_d_c。"""
@@ -189,18 +190,18 @@ class TestBuildWeakFormLibraryShapes:
 # ---------------------------------------------------------------------------
 
 class TestWeakFormIBPCorrectness:
-    """验证弱形式 IBP 公式与 D†-投影系数的对数一致。
+    """验证弱形式 IBP 公式与完整 N×N 帽矩阵的对数一致。
 
-    新版弱形式直接乘以 D 逆计算投影系数（A = D̂ @ D†[:, :K]），
-    再对 ln_A = log(A + ε) 做 IBP 内积，不依赖 SVD 分离。
+    新版弱形式直接计算 A = D̂ @ D†（N×N 方阵，帽矩阵，无需截断），
+    再对 ln_A = log(A + ε) 做 IBP 内积。k_eff 参数已弃用不生效。
     """
 
     def test_pure_f_recovery(self):
         """验证弱形式输出精确等于 IBP 离散公式（以 ln_A 为信号）。
 
         对 D(c,ω) = exp(α·c_1)·P_spectral(ω) 这类数据：
-        - D† 给出投影系数 A = D̂ @ D†[:, :K]
-        - ln_A ≈ α·c_1 + const（实数部分主导）
+        - D† 给出完整帽矩阵 A = D̂ @ D†（N×N 方阵）
+        - ln_A 的各列驱动 IBP 算子
         - 弱形式算子输出应满足：
             wL_1_f[m, k] = Re( -Σ_n (∂_{c_1}ψ_m·c_1(n) + ψ_m(c_n)) · ln_A(c_n, k) )
         """
@@ -327,13 +328,15 @@ class TestWeakFormPipeline:
         assert any("w" in n.lower() for n in out_weak.operator_names)
 
     def test_weak_form_k_eff_shape(self):
-        """弱形式的 Xi 和 A_matrix 列数应等于 k_value。"""
+        """弱形式的 Xi 和 A_matrix 列数应等于样本数 N（D̂ @ D† 为 N×N 方阵）。"""
         s, factors, wl = self._make_spectra()
+        n_samples = factors.shape[0]   # 4×4 网格 = 16 个样本
         cfg = DiscoveryConfig(k_mode="fixed", k_value=3, use_weak_form=True)
         out = run_discovery(s, factors, wl, cfg)
-        assert out.Xi.shape[2] == 3
-        assert out.A_matrix.shape[1] == 3
-        assert out.S_real.shape[1] == 3
+        # 组分数 = 样本数（帽矩阵列数），与 k_value 无关
+        assert out.Xi.shape[2] == n_samples
+        assert out.A_matrix.shape[1] == n_samples
+        assert out.S_real.shape[1] == n_samples
 
     def test_weak_form_no_d_d_c_used(self):
         """弱形式管线不应依赖 d_d_c（通过 monkeypatch 验证）。"""

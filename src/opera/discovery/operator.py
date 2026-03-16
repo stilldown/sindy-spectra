@@ -1,34 +1,33 @@
-"""备选算子库：伪逆路径与弱形式路径（均不依赖 SVD 分离）。
+"""备选算子库：伪逆路径与弱形式路径（均通过完整 N×N 帽矩阵实现，不依赖 SVD 分离）。
 
 两种算子路径
 -----------
 本模块提供两条与 :mod:`opera.discovery.pipeline_utils` 不同的算子构造路径，
-两条路径均通过直接乘以 D 逆（Moore-Penrose 伪逆 D†）来计算，无需 SVD 分离：
+两条路径均通过直接乘以 D 逆（Moore-Penrose 伪逆 D†）来计算完整的 N×N 帽矩阵：
+
+    D† = pinv(D̂)  ∈ ℂ^{P×N}
+    A  = D̂ @ D†   ∈ ℂ^{N×N}   （完整帽矩阵，方阵，无需截断）
+
+D̂ 为 (N, P)，D† 为 (P, N)，二者相乘得到 **N×N 方阵**（帽矩阵 / 正交投影算子）。
+组分数 K = N，由矩阵乘法自然确定，不依赖用户指定的 k_value。
 
 **路径 A — 伪逆算子（construct_inverse_library）**
 
-不做 SVD 谱基投影，直接计算::
+对 D† @ ∂D̂/∂c_j 这一 (P, P) 方阵取对角线前 N 个元素::
 
-    L_j^{inv}(ω) = diag(D† · ∂D/∂c_j)   ∈ ℂ^P
+    L_j^{inv}(k) = (D† · ∂D̂/∂c_j)_{kk},   k = 0..N-1
 
-其中 D† = pinv(D̂) ∈ ℂ^{P×N} 是 Moore-Penrose 伪逆。
-取对角线相当于对每个频率 ω 独立估计算子标量值。
-投影系数 A 通过直接乘以 D 逆得到::
-
-    A = D̂ @ D†[:, :k_eff]   ∈ ℂ^{N×k_eff}
-
-零阶项 ln A 由此 A 取复数对数（区别于直接对频率箱取对数的方式）。
+零阶项 ln A 对帽矩阵逐元素取复数对数：ln A = log(D̂ @ D†)。
 
 **路径 B — 弱形式算子（build_weak_form_library）**
 
 无需 ∂D̂/∂c_j（避免对含噪数据求导）。关键步骤：
 
-1. **直接乘以 D 逆得到投影系数 A（不用 SVD 分离）**::
+1. **直接乘以 D 逆得到完整 N×N 帽矩阵（不用 SVD，无需截断）**::
 
-       D† = pinv(D̂)  ∈ ℂ^{P×N}
-       A  = D̂ @ D†[:, :K]  ∈ ℂ^{N×K}   （帽矩阵前 K 列）
+       A = D̂ @ D†  ∈ ℂ^{N×N}   （方阵）
 
-2. **对投影系数 ln A_k(c) 做 IBP 内积**::
+2. **对帽矩阵的对数 ln A 做 IBP 内积**::
 
        ⟨c_i ∂_{c_i} ln A_k, ψ_m⟩
            = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
@@ -54,28 +53,35 @@ def construct_inverse_library(
     factors: np.ndarray,
     config: DiscoveryConfig,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
-    r"""伪逆算子库（不做 SVD 谱基投影，直接乘以 D 逆）。
+    r"""伪逆算子库（不做 SVD 谱基投影，直接乘以 D 逆得到完整帽矩阵）。
 
-    对每个频率 ω 独立计算::
+    数学基础
+    --------
+    D̂ 形状为 (N, P)，其 Moore-Penrose 伪逆 D† 形状为 (P, N)。
+    二者相乘 **D̂ @ D† ∈ ℂ^{N×N}** 是方阵（帽矩阵 / 正交投影算子），
+    无需人为截断到组分数 k_eff。
+
+    对每个频率 ω 的对角线算子::
 
         L_j^{inv}(ω) = diag(D† · ∂D̂/∂c_j)            （一阶）
         Ξ_{ij}^{inv}(ω) = diag(D† · ∂²D̂/(∂c_i∂c_j))  （二阶）
 
-    其中 D† = pinv(D̂) ∈ ℂ^{P×N} 是 Moore-Penrose 伪逆。
-    取对角线 → 截断到前 k_eff 个分量。
+    其中 D† = pinv(D̂) ∈ ℂ^{P×N}。乘积 D† @ ∂D̂/∂c_j 为 (P, P) 方阵，
+    取其对角线前 N 个元素（对应 N 个样本方向的分量）。
 
-    投影系数 A 通过直接乘以 D 逆得到（无需 SVD）::
+    投影系数 A（帽矩阵，方阵）::
 
-        A = D̂ @ D†[:, :k_eff]   ∈ ℂ^{N×k_eff}   （帽矩阵前 k_eff 列）
+        A = D̂ @ D†   ∈ ℂ^{N×N}   （完整帽矩阵，无截断）
 
-    零阶项 ln A 对此 D†-投影系数取复数对数，区别于直接对频率箱取对数的旧方式。
+    组分数 K = N，由矩阵乘法自然确定，不依赖用户指定的 k_value。
+    ln A 对帽矩阵逐元素取复数对数，此即"lnA 的另一种实现方式"。
 
     Returns
     -------
-    library        : dict[str, ndarray(N, k_eff)]
-    spectral_basis : ndarray (k_eff, P)   D†-基（D†前 k_eff 列的转置）
-    A              : ndarray (N, k_eff)   D†-投影系数
-    omega_means    : ndarray (k_eff,)     各分量有效频率
+    library        : dict[str, ndarray(N, N)]
+    spectral_basis : ndarray (N, P)   D†-基（D†全部 N 列的转置）
+    A              : ndarray (N, N)   完整帽矩阵 D̂ @ D†
+    omega_means    : ndarray (N,)     各分量有效频率
     """
     # D† = pinv(D̂) ∈ ℂ^{P×N}
     D_dag = np.linalg.pinv(d_hat)
@@ -83,41 +89,45 @@ def construct_inverse_library(
     n_samples, n_freq = d_hat.shape
     n_controls = factors.shape[1]
 
-    # 确定有效分量数 k_eff，不超过矩阵秩 min(N, P)
-    k_eff_max = min(n_samples, n_freq)
-    k_eff = k_eff_max
-    if config.k_mode == "fixed":
-        k_eff = int(config.k_value)
-    k_eff = min(k_eff, k_eff_max)
+    # D̂ @ D† 是 N×N 方阵，无需截断到任何 k_eff
+    # 组分数 = 样本数 N，由矩阵乘法自然确定
+    A = d_hat @ D_dag                               # (N, N) — 完整帽矩阵，方阵
+    k_eff = n_samples                               # 组分数由帽矩阵列数自然决定
+    spectral_basis = D_dag.T                        # (N, P)
+    omega_means = np.real(
+        np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
+    )                                               # (N,)
 
     library: Dict[str, np.ndarray] = {}
 
-    # 直接乘以 D 逆：A = D̂ @ D†[:, :k_eff]（帽矩阵前 k_eff 列）
-    A = d_hat @ D_dag[:, :k_eff]                    # (N, k_eff)
-    spectral_basis = D_dag[:, :k_eff].T              # (k_eff, n_freq)
-    omega_means = np.real(
-        np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
-    )                                                # (k_eff,)
-
-    # 零阶：对 D†-投影系数 A 取复数对数（lnA 的另一种实现方式）
-    ln_A = np.log(A + 1e-12)                        # (N, k_eff)
+    # 零阶：对帽矩阵 A 逐元素取复数对数（lnA 的另一种实现方式）
+    ln_A = np.log(A + 1e-12)                        # (N, N)
     library["ln_f"] = np.real(ln_A)
     library["g"]    = -np.imag(ln_A) / (omega_means[None, :] + 1e-9)
 
-    # 一阶：diag(D† · ∂D̂/∂c_j)，广播为 (N, k_eff)
-    # D_dag: (P, N)，d_d_c[:,j,:]: (N, P)  →  D_dag @ d_d_c = (P, P)
+    # 一阶：diag(D† @ ∂D̂/∂c_j) → (P, P) 方阵的对角线
+    # 取前 k_eff = N 个元素；当 P < N 时补零（保证形状为 (N, N)）
+    # D_dag: (P, N)，d_d_c[:,j,:]: (N, P)  →  D_dag @ d_d_c = (P, P) 方阵
+    def _pad_diag(mat: np.ndarray, target_len: int) -> np.ndarray:
+        """取方阵对角线并补零/截断到 target_len 个元素。"""
+        d = np.diag(mat)                              # (P,)
+        padded = np.zeros(target_len, dtype=d.dtype)
+        take = min(len(d), target_len)
+        padded[:take] = d[:take]
+        return padded                                 # (target_len,)
+
     for j in range(n_controls):
         term = D_dag @ d_d_c[:, j, :]               # (P, P)
-        diag_term = np.diag(term)[:k_eff]            # (k_eff,)
-        lib_j = np.tile(diag_term, (n_samples, 1))   # (N, k_eff)
+        diag_term = _pad_diag(term, k_eff)           # (N,)
+        lib_j = np.tile(diag_term, (n_samples, 1))   # (N, N)
         library[f"L1_c{j+1}_f"] = np.real(lib_j)
         library[f"L1_c{j+1}_g"] = -np.imag(lib_j) / (omega_means[None, :] + 1e-9)
 
-    # 二阶：diag(D† · ∂²D̂/(∂c_i∂c_j))
+    # 二阶：diag(D† @ ∂²D̂/(∂c_i∂c_j))，同理补零到 N 个元素
     for i in range(n_controls):
         for j in range(n_controls):
             term = D_dag @ d2_d_c[:, i, j, :]       # (P, P)
-            diag_term = np.diag(term)[:k_eff]
+            diag_term = _pad_diag(term, k_eff)       # (N,)
             lib_f = np.tile(np.real(diag_term), (n_samples, 1))
             lib_g = np.tile(
                 -np.imag(diag_term) / (omega_means + 1e-9), (n_samples, 1)
@@ -206,14 +216,17 @@ def build_weak_form_library(
     k_eff: int | None = None,
     spectral_basis: np.ndarray | None = None,
 ) -> Tuple[Dict[str, np.ndarray], List[str], np.ndarray, np.ndarray, np.ndarray]:
-    r"""**弱形式算子库**——通过直接乘以 D 逆计算投影系数，再做 IBP 内积，无需 SVD 分离和数值微分。
+    r"""**弱形式算子库**——直接乘以 D 逆得到完整 N×N 帽矩阵，再做 IBP 内积，无需 SVD 分离和数值微分。
 
-    数学原理（伪逆版：不用 SVD 分离，直接乘以 D 逆）
-    -------------------------------------------------
-    投影系数 A 通过 Moore-Penrose 伪逆直接计算（无需 SVD）::
+    数学原理（帽矩阵版：D̂ @ D† 为方阵，无需截断）
+    -----------------------------------------------
+    D̂ 形状为 (N, P)，其伪逆 D† 形状为 (P, N)。
+    二者相乘 **D̂ @ D† ∈ ℂ^{N×N}** 是方阵（帽矩阵），无需截断到组分数::
 
         D† = pinv(D̂)  ∈ ℂ^{P×N}
-        A  = D̂ @ D†[:, :K]  ∈ ℂ^{N×K}   （帽矩阵前 K 列）
+        A  = D̂ @ D†   ∈ ℂ^{N×N}   （完整帽矩阵，方阵，N = 样本数）
+
+    组分数 K = N，由矩阵乘法自然确定，不依赖用户指定的 k_eff。
 
     对 ln A_k(c) 做 IBP 内积::
 
@@ -224,13 +237,10 @@ def build_weak_form_library(
 
     库的形状约定
     -----------
-    每个库条目形状为 ``(M, K)``，其中
+    每个库条目形状为 ``(M, N)``，其中
 
     * M = 测试函数数量
-    * K = 保留的分量数（帽矩阵前 K 列）
-
-    与 :func:`~opera.discovery.pipeline_utils.solve_nullspace` 直接兼容
-    （M 充当"样本"轴，K 充当"组分"轴）。
+    * N = 样本数（帽矩阵列数，即 D̂ @ D† 的列数）
 
     Parameters
     ----------
@@ -243,13 +253,14 @@ def build_weak_form_library(
     test_func_degree : int
         测试函数的多项式阶数，默认 2。
     k_eff : int or None
-        保留的分量数 K。None 则保留 min(N, n_freq) 个。
-    spectral_basis : ndarray (K, n_freq) or None
-        若提供，则仅用于确定 K（k_eff 取其行数）；实际 A 始终由 D† 计算。
+        **保留参数，已弃用**。D̂ @ D† 是 N×N 方阵，组分数由矩阵乘法自然确定，
+        此参数不再生效。
+    spectral_basis : ndarray or None
+        **保留参数，已弃用**。
 
     Returns
     -------
-    library : dict[str, ndarray(M, K)]
+    library : dict[str, ndarray(M, N)]
         弱形式算子库，键名遵循 ``solve_nullspace`` 的 ``_f``/``_g`` 过滤约定：
 
         * ``"wln_f"``, ``"wg"``       — 零阶项（⟨ln A, ψ_m⟩ 的实/虚部）
@@ -258,39 +269,41 @@ def build_weak_form_library(
         测试函数名称列表。
     Psi : ndarray, shape (M, N)
         测试函数在所有样本点的取值矩阵。
-    spectral_basis : ndarray, shape (K, n_freq)
-        D†-基（D†前 K 列的转置），供 pipeline 重用。
-    A : ndarray, shape (N, K)
-        D†-投影系数 A = D̂ @ D†[:, :K]。
+    spectral_basis : ndarray, shape (N, n_freq)
+        D†-基（D†全部 N 列的转置），供 pipeline 重用。
+    A : ndarray, shape (N, N)
+        完整帽矩阵 D̂ @ D†。
     """
     N, n_freq = d_hat.shape
     n_controls = factors.shape[1]
 
-    # ── 步骤 1/2：直接乘以 D 逆，无需 SVD 分离 ────────────────────────────
+    # k_eff 和 spectral_basis 参数已弃用：D̂ @ D† 是 N×N 方阵，组分数由矩阵乘法自然确定
+    if k_eff is not None or spectral_basis is not None:
+        import warnings
+        warnings.warn(
+            "build_weak_form_library：k_eff 和 spectral_basis 参数已弃用并被忽略。"
+            "D̂ @ D† 是 N×N 方阵，组分数由矩阵乘法自然确定（K = N）。",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    # ── 步骤 1/2：直接乘以 D 逆，得到完整 N×N 帽矩阵（无需 SVD，无需截断）──
+    # D̂ @ D† 是方阵，D† = pinv(D̂) ∈ ℂ^{P×N}
     D_dag = np.linalg.pinv(d_hat)                   # (n_freq, N)
-    K_max = min(N, n_freq)                           # 最大分量数（不超过矩阵秩）
 
-    if spectral_basis is not None:
-        # 仅用于确定 k_eff
-        k_eff = spectral_basis.shape[0]
-    else:
-        if k_eff is None:
-            k_eff = K_max
-        k_eff = min(k_eff, K_max)
-
-    # A = D̂ @ D†[:, :k_eff]：帽矩阵前 k_eff 列，形状 (N, K)
-    spectral_basis = D_dag[:, :k_eff].T             # (K, n_freq)
-    A = d_hat @ D_dag[:, :k_eff]                    # (N, K)
+    # D̂ @ D† 是 N×N 方阵，组分数 = N（样本数），无需截断
+    spectral_basis = D_dag.T                         # (N, n_freq)
+    A = d_hat @ D_dag                               # (N, N) — 完整帽矩阵，方阵
 
     # 有效频率 ω_k = Re(diag(P diag(ω) P†))，用于 f/g 分离的归一化因子
+    # spectral_basis 为 (N, n_freq)，omega_means 为 (N,)
     omega_means = np.real(
         np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
-    )                                                # (K,)
+    )                                                # (N,)
 
-    # ── 步骤 3：对 D†-投影系数取复数对数（lnA 的另一种实现方式）──────────
-    # ln_A ∈ ℂ^{N×K}：Re(ln_A) = ln|A_k(c)|，Im(ln_A) = arg(A_k(c))
-    # A 由 D† 直接给出（帽矩阵列），区别于旧的 SVD 谱基投影
-    ln_A = np.log(A + 1e-12)                        # (N, K)
+    # ── 步骤 3：对完整帽矩阵 A 逐元素取复数对数（lnA 的另一种实现方式）──────
+    # A = D̂ @ D† 是 N×N 方阵；ln_A ∈ ℂ^{N×N}
+    ln_A = np.log(A + 1e-12)                        # (N, N)
 
     # ── 步骤 4：多项式测试函数及其解析梯度 ────────────────────────────────
     Psi, dPsi, names = _build_polynomial_test_functions_with_grads(
@@ -394,22 +407,25 @@ def compute_weak_operators(
     D_dag = np.linalg.pinv(d_hat)
     n_controls = factors.shape[1]
 
-    # determine effective component count from library shapes
-    sample_mat = next(iter(lib.values()))
-    k_eff = sample_mat.shape[1]
+    # 组分数 = 样本数（与 construct_inverse_library 保持一致，帽矩阵为 N×N 方阵）
+    k_eff = n_samples
 
     weak: Dict[str, np.ndarray] = {}
 
-    # helper to tile diag for all samples
-    def tile_diag(mat: np.ndarray) -> np.ndarray:
-        diag = np.diag(mat)[:k_eff]
-        return np.tile(diag, (n_samples, 1))
+    # helper：取 (P, P) 方阵的对角线并补零/截断到 k_eff = n_samples
+    def tile_diag(mat: np.ndarray, target_len: int, nrows: int) -> np.ndarray:
+        d = np.diag(mat)                              # (P,)
+        # 补零到 target_len（当 P < target_len 时）或截断（当 P >= target_len 时）
+        padded = np.zeros(target_len, dtype=d.dtype)
+        take = min(len(d), target_len)
+        padded[:take] = d[:take]
+        return np.tile(padded, (nrows, 1))            # (N, N)
 
     # compute first-order weak operators and store basic L1 matrices
     L1_basic = []
     for j in range(n_controls):
         raw1 = D_dag @ d_d_c[:, j, :]  # shape (n_freq, n_freq)
-        m = tile_diag(raw1)
+        m = tile_diag(raw1, k_eff, n_samples)
         L1_basic.append(m)
         # weak: psi*m - psi_grad_j（分部积分修正，对每个频率分量减去标量梯度）
         weak[f"L1_c{j+1}_weak"] = psi[:, None] * m - psi_grad[:, j, None] * np.ones((1, k_eff))
@@ -418,7 +434,7 @@ def compute_weak_operators(
     for i in range(n_controls):
         for j in range(n_controls):
             raw2 = D_dag @ d2_d_c[:, i, j, :]  # shape (n_freq, n_freq)
-            m2 = tile_diag(raw2)
+            m2 = tile_diag(raw2, k_eff, n_samples)
             cross_term = L1_basic[i] * L1_basic[j]
             if i == j:
                 cross_term = cross_term - L1_basic[i]

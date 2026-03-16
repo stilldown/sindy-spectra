@@ -30,8 +30,8 @@
     （见 :func:`~opera.discovery.operator.construct_inverse_library`）
 
 * 真弱形式（``use_weak_form=True``）：
-    直接乘以 D 逆 A = D̂ @ D†[:, :K]，无需 SVD 分离；
-    对 ln A_k 做 IBP 内积 ⟨L_i, ψ_m⟩ — 无需数值微分
+    D̂ @ D† = N×N 方阵（帽矩阵，无需截断），组分数 K = N；
+    对 ln A 做 IBP 内积 ⟨L_i, ψ_m⟩ — 无需数值微分
     （见 :func:`~opera.discovery.operator.build_weak_form_library`）
 
 **阶段 4：SINDy-PI 零空间识别**
@@ -112,17 +112,15 @@ def run_discovery(
 
     # ── 阶段 3：算子特征库 Θ ────────────────────────────────────────────────
     if cfg.use_weak_form:
-        # 弱形式路径：直接乘以 D 逆计算投影系数（不用 SVD 分离），
-        # 再对 ln A_k 做 IBP 内积（无需数值微分）。
-        # build_weak_form_library 内部做 pinv → A = D̂ @ D†[:, :K] → 对数 → IBP，
-        # 返回 basis 和 A 供后续重建使用。
+        # 弱形式路径：D̂ @ D† 是 N×N 方阵（帽矩阵），无需截断到 k_eff。
+        # build_weak_form_library 内部做 pinv → A = D̂ @ D†（N×N 方阵） → ln A → IBP。
+        # 组分数 K = N（样本数），由矩阵乘法自然确定；k_eff 参数已弃用不生效。
         from .operator import build_weak_form_library
         lib, _psi_names, _Psi, basis, A = build_weak_form_library(
             d_hat=d_hat,
             factors=c,
             omega=omega,
             test_func_degree=cfg.weak_form_test_degree,
-            k_eff=int(cfg.k_value) if cfg.k_mode == "fixed" else int(cfg.k_max),
         )
 
     elif cfg.use_inverse_operator:
