@@ -178,11 +178,16 @@ class TestBuildWeakFormLibraryShapes:
         assert A.shape == (N, N)
 
     def test_no_d_d_c_required(self):
-        """build_weak_form_library 的签名不含 d_d_c。"""
+        """build_weak_form_library 的签名不含导数参数（无论旧名 d_d_c 还是新名 dD_dc）。
+        
+        弱形式库通过 IBP 完全避免对含噪数据求导，函数签名中不应出现任何形式的导数参数。
+        """
         import inspect
         sig = inspect.signature(build_weak_form_library)
-        assert "d_d_c" not in sig.parameters, "d_d_c should NOT be a parameter"
-        assert "d2_d_c" not in sig.parameters, "d2_d_c should NOT be a parameter"
+        assert "d_d_c" not in sig.parameters, "旧名 d_d_c 不应作为参数"
+        assert "d2_d_c" not in sig.parameters, "旧名 d2_d_c 不应作为参数"
+        assert "dD_dc" not in sig.parameters, "新名 dD_dc 不应作为参数（弱形式无需求导）"
+        assert "d2D_dc2" not in sig.parameters, "新名 d2D_dc2 不应作为参数（弱形式无需求导）"
 
 
 # ---------------------------------------------------------------------------
