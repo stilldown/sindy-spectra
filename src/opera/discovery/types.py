@@ -75,6 +75,10 @@ class DiscoveryConfig:
         无需对含噪数据求导，优先级高于 use_inverse_operator。
     weak_form_test_degree : int
         弱形式多项式测试函数的最高阶数，默认 2。
+    use_direct_euler : bool
+        True → 使用无 SVD 的直接 Euler 算子路径（``pipeline_utils.build_direct_euler_library``）。
+        算子直接在全频域张量 D̂(c, ω) 上计算（含 c_i 缩放），用 W(ω)=[1,−iω] 线性拟合
+        分离 f/g，输出 K=1 全局方程，不进行组分分离。优先级仅低于 use_weak_form。
     """
     # ---------- 组分数选择 ----------
     k_mode: str = "fixed"
@@ -94,7 +98,7 @@ class DiscoveryConfig:
     use_inverse_operator: bool = False
     use_weak_form: bool = False
     weak_form_test_degree: int = 2
-
+    use_direct_euler: bool = False
 
 @dataclass
 class DiscoveryResult:

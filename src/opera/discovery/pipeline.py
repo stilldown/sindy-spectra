@@ -53,7 +53,7 @@ from time import perf_counter
 
 from .types import DiscoveryConfig, DiscoveryResult
 from .preprocess import validate_inputs, compute_fourier_tensor, build_control_derivative_bundle
-from .pipeline_utils import construct_pure_library, solve_nullspace, pretty_name
+from .pipeline_utils import construct_pure_library, build_direct_euler_library, solve_nullspace, pretty_name
 from .operator import construct_inverse_library
 
 
@@ -123,6 +123,17 @@ def run_discovery(
             test_func_degree=cfg.weak_form_test_degree,
         )
 
+    elif cfg.use_direct_euler:
+        # 1.md 直接 Euler 算子路径：无 SVD，逐元素在全频域 D̂(c,ω) 上计算 Euler 算子，
+        # 用 W(ω)=[1,−iω] 线性拟合分离 f/g，输出 K=1 全局物理方程。
+        lib, basis, A, _w_means = build_direct_euler_library(
+            d_hat=d_hat,
+            dD_dc=dD_dc,
+            d2D_dc2=d2D_dc2,
+            omega=omega,
+            c=c,
+        )
+
     elif cfg.use_inverse_operator:
         # 伪逆路径：D†∂D 对角线截断，不做谱基投影
         lib, basis, A, _w_means = construct_inverse_library(
@@ -143,7 +154,7 @@ def run_discovery(
             pass
 
     else:
-        # 默认路径（推荐）：SVD 谱基 → 按元素复对数 → Euler 算子
+        # 默认路径（推荐）：SVD 谱基 → 按元素复对数 → Euler 算子（含 c_i 缩放）
         lib, basis, A, _w_means = construct_pure_library(
             d_hat=d_hat,
             dD_dc=dD_dc,

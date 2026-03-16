@@ -66,7 +66,9 @@ def pretty_name(name: str) -> str:
     if m2:
         i, j, fg = m2.groups()
         if i == j:
-            return f"c{i}^2d2_{fg}/dc{i}^2"
+            # 对角项为完整二阶 Euler 算子：c_i ∂_{c_i}(c_i ∂_{c_i} f)
+            # = c_i² ∂²f/∂c_i² + c_i ∂f/∂c_i（含一阶修正项）
+            return f"c{i}d(c{i}d_{fg}/dc{i})/dc{i}"
         else:
             return f"c{i}c{j}d2_{fg}/dc{i}dc{j}"
     # fallback 保留原名
@@ -112,6 +114,12 @@ def construct_pure_library(
 
         f 子空间: ln_f, ln_f^2, L1_c{j}_f, Xi2_c{i}c{j}_f
         g 子空间: g,    g^2,    L1_c{j}_g, Xi2_c{i}c{j}_g
+
+    .. warning::
+        库中**不得**加入 f×g 交叉项（如 ``ln_f*g``）。交叉项既不属于 f 子空间
+        也不属于 g 子空间，会导致 J_f + J_g < J（库内出现"孤立项"），
+        进而使 ``pipeline.py`` 中按键名查找填入 Xi 的循环漏填该位置，
+        令 Xi 部分列永远为零，破坏系数张量完整性。
 
     Parameters
     ----------
@@ -160,24 +168,46 @@ def construct_pure_library(
         for j in range(n_controls):
             d2A[:, i, j, :] = d2D_dc2[:, i, j, :] @ spectral_basis.conj().T
 
-    # L_i = dA / A （对数导数）；屏蔽极小 A 避免数值爆炸
+    # 屏蔽极小 A 避免数值爆炸
     weights = np.abs(A)
     mask = weights > 1e-9 * np.max(weights)
 
-    L1 = np.zeros_like(dA)
+    # alpha_i = ∂ ln A_k / ∂c_i（无 c 缩放的一阶对数导数）
+    alpha = np.zeros_like(dA)
     L1_mask = mask[:, None, :].repeat(n_controls, axis=1)
     A_exp1 = A[:, None, :].repeat(n_controls, axis=1)
-    L1[L1_mask] = dA[L1_mask] / A_exp1[L1_mask]
+    alpha[L1_mask] = dA[L1_mask] / A_exp1[L1_mask]
 
-    # Ξ_{ij} = d2A/A - L_i·L_j
-    Xi2 = np.zeros_like(d2A)
+    # beta_ij = ∂² ln A_k / ∂c_i ∂c_j（无 c 缩放的二阶对数导数）
+    beta = np.zeros_like(d2A)
     term1 = np.zeros_like(d2A)
     term1_mask = mask[:, None, None, :].repeat(n_controls, axis=1).repeat(n_controls, axis=2)
     A_exp2 = A[:, None, None, :].repeat(n_controls, axis=1).repeat(n_controls, axis=2)
     term1[term1_mask] = d2A[term1_mask] / A_exp2[term1_mask]
     for i in range(n_controls):
         for j in range(n_controls):
-            Xi2[:, i, j, :] = term1[:, i, j, :] - L1[:, i, :] * L1[:, j, :]
+            beta[:, i, j, :] = term1[:, i, j, :] - alpha[:, i, :] * alpha[:, j, :]
+
+    # 一阶 Euler 算子：L_i = c_i * ∂ ln A_k / ∂c_i（含 c_i 缩放）
+    L1 = np.zeros_like(dA)
+    for j in range(n_controls):
+        L1[:, j, :] = c[:, j, np.newaxis] * alpha[:, j, :]
+
+    # 二阶 Euler 算子（1.md 公式）：
+    #   对角 Ξ_{ii} = c_i² β_{ii} + L_i  = c_i ∂_{c_i}(c_i ∂_{c_i} ln A_k)
+    #   非对角 Ξ_{ij} = c_i c_j β_{ij}    = c_i c_j ∂² ln A_k / ∂c_i ∂c_j
+    Xi2 = np.zeros_like(d2A)
+    for i in range(n_controls):
+        for j in range(n_controls):
+            if i == j:
+                Xi2[:, i, j, :] = (
+                    c[:, i, np.newaxis] ** 2 * beta[:, i, j, :]
+                    + L1[:, i, :]
+                )
+            else:
+                Xi2[:, i, j, :] = (
+                    c[:, i, np.newaxis] * c[:, j, np.newaxis] * beta[:, i, j, :]
+                )
 
     # ── 步骤 5：f/g 分离 → 实值算子库（f 和 g 子空间严格不相交） ──────────
     library: dict[str, np.ndarray] = {}
@@ -278,3 +308,138 @@ def solve_nullspace(
                 results[subspace_name] = (coefs, keys)
         component_models.append(results)
     return component_models
+
+
+def build_direct_euler_library(
+    d_hat: np.ndarray,
+    dD_dc: np.ndarray,
+    d2D_dc2: np.ndarray,
+    omega: np.ndarray,
+    c: np.ndarray,
+) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+    """无 SVD 直接 Euler 算子库（1.md 完整路径）。
+
+    算法步骤（对应 1.md 第 2–3 节）
+    ----------------------------------
+    **步骤 1：逐元素 Euler 算子（无子空间降维）**
+
+    对每个控制维 c_i，直接在全频域张量 D̂(c, ω) ∈ ℂ^{N×P} 上计算：
+
+        alpha_i(c, ω) = ∂D̂/∂c_i(c, ω) / D̂(c, ω)          （一阶对数导数）
+        L_i(c, ω)     = c_i · alpha_i(c, ω)                 （一阶 Euler 算子）
+
+    二阶（按 1.md 公式）：
+
+        beta_ij = ∂²D̂/(∂c_i∂c_j) / D̂ - alpha_i · alpha_j  （二阶对数导数）
+        Ξ_{ii}  = c_i² · beta_ii + L_i                      （对角 Euler 算子）
+        Ξ_{ij}  = c_i · c_j · beta_ij        (i ≠ j)        （非对角 Euler 算子）
+
+    **步骤 2：W(ω) 线性拟合分离 f/g**
+
+    对每个算子 A(c, ω)（N×P 复矩阵），在每个 c 点上跨所有 ω 作最小二乘拟合：
+
+        A(c_n, ω) ≈ f(c_n) + (−i·ω) · g(c_n)
+        W = [[1, −iω₁], [1, −iω₂], ..., [1, −iωₚ]]ᵀ  ∈ ℂ^{P×2}
+        [f(c_n), g(c_n)]ᵀ = pinv(W) · A(c_n, :)
+
+    取 f = Re 分量，g = Re 分量（拟合保证两者均近实数）。
+
+    **步骤 3：返回库**
+
+    库条目形状为 (N, 1)，与 solve_nullspace 兼容（K=1 全局方程）。
+
+    Parameters
+    ----------
+    d_hat   : (N, P)   频域观测数据（rfft）
+    dD_dc   : (N, d, P)   一阶偏导 ∂D̂/∂c_j
+    d2D_dc2 : (N, d, d, P)   二阶偏导 ∂²D̂/(∂c_i∂c_j)
+    omega   : (P,)   归一化频率轴 ω ∈ [0, 1]
+    c       : (N, d)   控制变量矩阵
+
+    Returns
+    -------
+    library       : dict[str, ndarray(N, 1)]   算子库，键名与 SVD 路径兼容
+    spectral_basis : ndarray (1, P)             参考谱（零锚点均值）
+    A              : ndarray (N, 1)             响应系数（exp(f_0)）
+    omega_means    : ndarray (1,)               参考有效频率
+    """
+    n_samples, n_freq = d_hat.shape
+    n_controls = c.shape[1]
+
+    # W(ω) = [1, -iω]ᵀ，用于跨频率拟合 f 和 g
+    W = np.stack([np.ones(n_freq), -1j * omega], axis=1)    # (P, 2)
+    # pinv_W: (2, P)，使得 [f; g] = pinv_W @ A(c, :)
+    pinv_W = np.linalg.pinv(W)                              # (2, P)
+
+    def _fg_fit(op: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """对 (N, P) 复算子矩阵跨 ω 做 W(ω) 拟合，返回 f(N,) 和 g(N,)。"""
+        fg = op @ pinv_W.T    # (N, 2)
+        return np.real(fg[:, 0]), np.real(fg[:, 1])
+
+    # ── 步骤 1：逐元素对数导数（屏蔽极小 D̂ 避免数值爆炸）─────────────────
+    eps_abs = 1e-9 * np.max(np.abs(d_hat))
+    dhat_safe = d_hat.copy()
+    dhat_safe[np.abs(dhat_safe) < eps_abs] = eps_abs * (1.0 + 0j)
+
+    # alpha_i(c, ω) = ∂D̂/∂c_i / D̂（N, d, P）
+    alpha = dD_dc / dhat_safe[:, np.newaxis, :]
+
+    # beta_ij(c, ω) = ∂²D̂/(∂c_i∂c_j) / D̂ - alpha_i · alpha_j（N, d, d, P）
+    beta = (d2D_dc2 / dhat_safe[:, np.newaxis, np.newaxis, :]
+            - alpha[:, :, np.newaxis, :] * alpha[:, np.newaxis, :, :])
+
+    # 一阶 Euler 算子：L_i = c_i · alpha_i（N, d, P）
+    L_euler = c[:, :, np.newaxis] * alpha      # broadcast: (N, d, P)
+
+    # 二阶 Euler 算子（N, d, d, P）
+    Xi2_direct = np.zeros_like(d2D_dc2)
+    for i in range(n_controls):
+        for j in range(n_controls):
+            if i == j:
+                Xi2_direct[:, i, j, :] = (
+                    c[:, i, np.newaxis] ** 2 * beta[:, i, j, :]
+                    + L_euler[:, i, :]
+                )
+            else:
+                Xi2_direct[:, i, j, :] = (
+                    c[:, i, np.newaxis] * c[:, j, np.newaxis] * beta[:, i, j, :]
+                )
+
+    # ── 步骤 2：W(ω) 拟合 → f/g 标量场 ─────────────────────────────────────
+    library: dict[str, np.ndarray] = {}
+
+    # 零阶项：对 ln D̂ 做 W(ω) 拟合
+    ln_dhat = np.log(np.abs(dhat_safe) + 1e-12) + 1j * np.angle(dhat_safe)  # (N, P)
+    f0, g0 = _fg_fit(ln_dhat)
+    library["ln_f"]   = f0[:, np.newaxis]           # (N, 1)
+    library["g"]      = g0[:, np.newaxis]            # (N, 1)
+    library["ln_f^2"] = f0[:, np.newaxis] ** 2
+    library["g^2"]    = g0[:, np.newaxis] ** 2
+
+    # 一阶 Euler 算子
+    for j in range(n_controls):
+        fj, gj = _fg_fit(L_euler[:, j, :])
+        library[f"L1_c{j+1}_f"] = fj[:, np.newaxis]     # (N, 1)
+        library[f"L1_c{j+1}_g"] = gj[:, np.newaxis]
+
+    # 二阶 Euler 算子
+    for i in range(n_controls):
+        for j in range(n_controls):
+            fi, gi = _fg_fit(Xi2_direct[:, i, j, :])
+            library[f"Xi2_c{i+1}c{j+1}_f"] = fi[:, np.newaxis]
+            library[f"Xi2_c{i+1}c{j+1}_g"] = gi[:, np.newaxis]
+
+    # ── 步骤 3：参考谱与响应系数 ──────────────────────────────────────────────
+    # 参考谱：D̂ 沿样本轴均值（作为单一"组分"谱基）
+    spectral_basis = np.mean(d_hat, axis=0, keepdims=True)   # (1, P)
+
+    # 响应系数：用 W(ω) 拟合的对数幅度重建
+    A = np.exp(f0)[:, np.newaxis].astype(complex)            # (N, 1)
+
+    # 有效频率
+    omega_means = np.array([np.real(
+        np.dot(spectral_basis[0], omega * spectral_basis[0].conj())
+        / (np.dot(spectral_basis[0], spectral_basis[0].conj()) + 1e-12)
+    )])                                                       # (1,)
+
+    return library, spectral_basis, A, omega_means
