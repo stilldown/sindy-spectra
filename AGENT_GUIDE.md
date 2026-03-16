@@ -112,3 +112,158 @@ out = run_discovery(spectra, factors, wavelengths, cfg)
 - 平移=g_shift→频域相位，当前默认零；想恢复估计就把 g_shift 算出来再喂回去。
 - SINDy-PI 不会自动乘积算子，算子库要显式列出你想要的乘积/幂/导数。
 - 联合对角化（1.md 算法）：`joint_diag.py` 中提供了完整的 Euler 算子、f/g 分离和联合对角化实现。
+
+---
+
+## 实现状态清单（统计截止 2026-03-16）
+
+> 图例：✅ 已实现且接入主管线 ｜ 🟡 已实现但未接入/仅独立调用 ｜ ❌ 未实现或存在明显缺口
+
+### 一、预处理层（`preprocess.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `validate_inputs` | ✅ | 校验形状/一致性 |
+| `compute_fourier_tensor` | ✅ | rfft + 归一化频率轴 |
+| `_detect_cartesian_grid` | ✅ | 笛卡尔网格检测 |
+| `estimate_control_derivatives_scattered` | 🟡 | 仅支持笛卡尔等间距网格；非网格直接 `raise ValueError`，kNN/RBF 路径已移除 |
+| `estimate_control_second_derivatives_scattered` | 🟡 | 同上，仅网格 |
+| `build_control_derivative_bundle` | ✅ | 含锚点处理 |
+| **散点数据支持** | ❌ | 非等间距笛卡尔网格无法处理 |
+
+### 二、强形式算子库（`pipeline_utils.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `construct_pure_library` | ✅ | SVD谱基投影，主管线默认路径 |
+| `solve_nullspace` | ✅ | f/g 空间零空间解 |
+| `pretty_name` | ✅ | 算子名格式化 |
+
+### 三、算子层（`operator.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `construct_inverse_library` | 🟡 | 伪逆算子库，`use_inverse_operator=True` 时启用 |
+| `_build_polynomial_test_functions_with_grads` | ✅ | 多项式测试函数及解析梯度 |
+| `build_weak_form_library` | ✅ | 真正弱形式（IBP，无需 d_d_c），`use_weak_form=True` 时启用 |
+| `compute_weak_operators` | 🟡 | 近似弱形式（遗留，仍需 d_d_c），不是真正 IBP |
+| `_compute_control_gradient` | 🟡 | 仅笛卡尔网格 |
+
+### 四、联合对角化算法（`joint_diag.py`，1.md 算法）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `build_euler_operators` | 🟡 | Euler 算子（一/二阶/交叉），仅独立管线调用 |
+| `separate_fg` / `separate_all_operators_fg` | 🟡 | f/g 频域分离 |
+| `joint_diagonalize` | 🟡 | 联合对角化（特征值分解） |
+| `joint_diag_residual` | 🟡 | 残差用方差近似，非严格 off-diagonal 范数 |
+| `build_physical_candidate_library` | 🟡 | 多项式+对数+倒数候选库 |
+| `sindy_pi_nullspace` | 🟡 | SINDy-PI 零空间稀疏回归 |
+| `run_joint_diag_pipeline` | 🟡 | 完整 1.md 管线入口 |
+| **与 `run_discovery` 主管线的连接** | ❌ | `joint_diag.py` 完全独立，主管线从未调用它 |
+
+### 五、因子分解与稀疏化（`factorization.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `select_component_count` | 🟡 | fixed/auto/capped-auto，已实现但未被主管线调用 |
+| `find_joint_nullspace` | 🟡 | 物理零空间提取（特征值法） |
+| `extract_sparse_physical_coefficients` | 🟡 | DEIM 启发稀疏旋转 |
+| `calibrate_pure_spectra_once` | 🟡 | 单次复频域纯谱校准，已实现但主管线中**未调用** |
+
+### 六、物理解码（`decoder.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `build_1d_first_derivative_matrix` | 🟡 | 非均匀网格中心差分稀疏矩阵 |
+| `build_grid_derivative_matrices` | 🟡 | 全局稀疏偏导算子 |
+| `_parse_term_operator` | 🟡 | 方程项字符串→算子解析 |
+| `decode_physical_manifolds` | 🟡 | Xi 系数→f(c)/g(c) Picard 迭代恢复 |
+| **与主管线连接** | ❌ | `run_discovery` 从未调用 `decode_physical_manifolds`；f(c)/g(c) 直接从投影 A 获取 |
+
+### 七、可观测算子库（`library/observable.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `build_observable_library` | 🟡 | 12类物理约束算子库（4驱动×3频率变换），接口完整 |
+| **与主管线连接** | ❌ | 主管线走 `construct_pure_library`，此模块从未被调用 |
+
+### 八、其他库模块（`library/kron.py`, `library/lie_basis.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `build_psi` (Kronecker) | 🟡 | 已实现，无上游调用 |
+| `build_lie_basis` | 🟡 | W0/W1/W2 频率基，已实现，无上游调用 |
+
+### 九、稀疏回归（`regression/complex_sparse.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `nullspace_sparse_vectors` | 🟡 | STRidge 稀疏化（已实现），主管线走 `solve_nullspace`，此模块未被调用 |
+
+### 十、符号识别（`symbolic.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `build_latex_blocks_from_xi` | 🟡 | SymPy `dsolve`/`pdsolve` 驱动方程块生成；多变量 PDE 成功率低，大量 `except: pass` 静默回退；Unicode 编解码问题（`∂²D?`）；仅输出 LaTeX 字符串，无可执行 Python/SymPy 表达式 |
+
+### 十一、发现管线（`pipeline.py`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| `run_discovery` 主流程 | ✅ | 三路入口（pure/inverse/weak_form） |
+| 锚点检测 | ✅ | |
+| 统一输出 `DiscoveryResult` | ✅ | |
+| `reconstruction_error` | ❌ | 固定返回 `0.0`，未实际计算 |
+| `g_shift` 估计 | ❌ | 固定全零；`estimate_g_shift` 配置字段存在但管线未调用估计逻辑 |
+| `S_real` 纯谱重建（弱形式/伪逆路径） | ❌ | 弱形式/伪逆路径用 SVD 谱基占位，未真正重建纯谱 |
+| `calibrate_pure_spectra_once` 调用 | ❌ | 定义在 `factorization.py`，主管线未调用 |
+
+### 十二、GUI（`src/opera/gui/`）
+
+| 功能 | 状态 | 备注 |
+|------|------|------|
+| 主窗口框架（导入/运行/展示） | ✅ | |
+| 后台分析线程 | ✅ | |
+| 数据加载（CSV/XLSX/演示数据） | ✅ | |
+| 光谱/纯谱/响应曲线可视化 | ✅ | |
+| Discovery 模型 LaTeX 渲染（WebEngine） | ✅ | 离线时 MathJax CDN 不可用 |
+| `update_library_from_ui` | ❌ | 方法体为空 `pass`，控件变化无响应 |
+| `use_inverse_operator` / `use_weak_form` 开关暴露 | ❌ | GUI 无对应控件 |
+| `estimate_g_shift` 开关暴露 | ❌ | GUI 无对应控件 |
+| 组分评分/能量占比诊断显示 | ❌ | 值均为 `None`，GUI 显示"未输出" |
+
+### 十三、测试（`tests/`）
+
+| 测试文件 | 状态 | 覆盖内容 |
+|---------|------|---------|
+| `test_discovery_smoke.py` | ✅ 18 个测试 | 主管线端到端、锚点检测、三控制变量、固定 K |
+| `test_joint_diag.py` | ✅ 14 个测试 | joint_diag.py 全部五个阶段 |
+| `test_library_auto_dims.py` | ✅ 0 个测试 | （空文件或未填充） |
+| `test_weak_form_library.py` | ✅ 20 个测试 | 弱形式算子库形状、IBP 精确性、管线集成 |
+| **decoder.py 覆盖** | ❌ | decode_physical_manifolds 无测试 |
+| **observable.py 覆盖** | ❌ | build_observable_library 无测试 |
+| **symbolic.py 覆盖** | ❌ | build_latex_blocks_from_xi 无测试 |
+| **factorization.py 覆盖** | 🟡 | find_joint_nullspace 有1个测试，其余无 |
+
+### 十四、文档
+
+| 内容 | 状态 | 备注 |
+|------|------|------|
+| `AGENT_GUIDE.md` | ✅ | 算法说明、弱形式说明、实现状态清单 |
+| `README.md` | ❌ | 几乎为空，仅有项目名称 |
+| 公共 API docstring | 🟡 | 核心函数均有中文文档字符串，但无 Sphinx/MkDocs 配置 |
+| `examples/` 示例脚本 | 🟡 | 4 个脚本存在，但未验证在当前 API 下可运行 |
+
+---
+
+### 优先级最高的待完成项
+
+1. **将 `joint_diag.py` 接入 `run_discovery`**（或通过 `DiscoveryConfig.use_joint_diag=True` 切换），使 1.md 算法真正可用。
+2. **实现真实的 `reconstruction_error`**（而非固定 0.0）。
+3. **实现 `g_shift` 估计路径**（当 `estimate_g_shift=True` 时）。
+4. **将 `calibrate_pure_spectra_once` 接入主管线**（当 `calibrate_pure_spectra_once=True` 时）。
+5. **GUI 暴露 `use_weak_form` / `use_inverse_operator` / `estimate_g_shift` 开关**。
+6. **填充 `update_library_from_ui` 方法**，使 GUI 参数变化即时响应。
+7. **补充 `decoder.py`、`symbolic.py`、`observable.py` 的测试覆盖**。
+8. **完善 `README.md`**，添加安装说明和快速使用示例。
