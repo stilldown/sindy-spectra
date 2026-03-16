@@ -135,7 +135,6 @@ def run_discovery(
         Xi=Xi,
         operator_names=op_names,
         f_response=A,
-        g_shift=np.zeros((s.shape[0], k_eff)),
         pure_spectra_complex=pure_spectra,
         reconstruction_error=0.0,
         xi_by_control={f"component_{k+1}": Xi[0, :, k] for k in range(k_eff)},
