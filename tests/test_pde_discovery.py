@@ -10,24 +10,24 @@
 Euler 算子库（每列 = 微分方程候选项在所有样本上的取值）：
     ln_f     = Re(ln A_k)                      ← 零阶（含规范化常数 C）
     L1_j_f   = c_j · ∂(ln f_k)/∂c_j           ← 一阶 Euler 算子（无常数）
-    Xi2_ij_f = c_i² ∂²(ln f_k)/∂c_i² + L1_i  ← 二阶 Euler 算子（含一阶修正项）
+    L2_ij_f = c_i² ∂²(ln f_k)/∂c_i² + L1_i  ← 二阶 Euler 算子（含一阶修正项）
 
 SINDy-PI 零空间找 ξ 使 Σ ξ_j Ω_j(ln_f) ≈ 0，即发现 f(c) 满足的隐式 ODE。
 
 注意：ln_f 包含谱基规范化常数 C = ln‖φ_k‖，因此 L1_f ≠ ln_f（差一个常数），
-但 L1_f 和 Xi2_f 都不含 C（因为它们是对 ln_f 求导后再乘 c）。
+但 L1_f 和 L2_f 都不含 C（因为它们是对 ln_f 求导后再乘 c）。
 
 Euler ODE 恒等式：f = exp(−ε c^n)
 --------------------------------------
     L1_f   = −n ε c^n        （= n · (ln_f − C)，无常数项）
-    Xi2_f  = n · L1_f         ← 关键恒等式，与 n 直接对应
-即：发现方程 Xi2_f − n · L1_f = 0 等价于 c²∂²(ln f)/∂c² = (n−1)c∂(ln f)/∂c
+    L2_f  = n · L1_f         ← 关键恒等式，与 n 直接对应
+即：发现方程 L2_f − n · L1_f = 0 等价于 c²∂²(ln f)/∂c² = (n−1)c∂(ln f)/∂c
     → 解为 ∂(ln f)/∂c = A c^(n−1) → f = exp(Bc^n)。
 
 具体情况：
-    n=1 (Beer-Lambert):  Xi2_f = 1 · L1_f  ↔  c²∂²(ln f)/∂c² = 0
-    n=2 (Gaussian):       Xi2_f = 2 · L1_f  ↔  c²∂²(ln f)/∂c² = c∂(ln f)/∂c
-    n=3 (Cubic-exp):      Xi2_f = 3 · L1_f  ↔  c²∂²(ln f)/∂c² = 2c∂(ln f)/∂c
+    n=1 (Beer-Lambert):  L2_f = 1 · L1_f  ↔  c²∂²(ln f)/∂c² = 0
+    n=2 (Gaussian):       L2_f = 2 · L1_f  ↔  c²∂²(ln f)/∂c² = c∂(ln f)/∂c
+    n=3 (Cubic-exp):      L2_f = 3 · L1_f  ↔  c²∂²(ln f)/∂c² = 2c∂(ln f)/∂c
 """
 from __future__ import annotations
 
@@ -80,11 +80,11 @@ def _make_exp_power_data(power: int, eps: float = 0.5, n_c: int = 10, n_wl: int 
 
 
 # ===========================================================================
-# 1. Euler ODE 恒等式：Xi2_f = n · L1_f  for  f = exp(−ε c^n)
+# 1. Euler ODE 恒等式：L2_f = n · L1_f  for  f = exp(−ε c^n)
 # ===========================================================================
 
 class TestEulerODEPowerIdentity:
-    """核心微分方程恒等式：Xi2_f / L1_f = n（非零锚点处）。
+    """核心微分方程恒等式：L2_f / L1_f = n（非零锚点处）。
 
     物理含义：比值 n 唯一决定了 f(c) 是哪种次幂的指数函数。
     算法可以通过这个比值"发现"浓度响应的次幂阶数。
@@ -92,25 +92,25 @@ class TestEulerODEPowerIdentity:
 
     @pytest.mark.parametrize("power", [1, 2, 3])
     def test_xi2_over_l1_equals_power_svd(self, power):
-        """SVD 路径：Xi2_f / L1_f = power（精确到 rtol=1e-4）。"""
+        """SVD 路径：L2_f / L1_f = power（精确到 rtol=1e-4）。"""
         c, c_vals, d_hat, omega, dD_dc, d2D_dc2 = _make_exp_power_data(power)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _ = construct_pure_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
 
         non_anchor = c_vals > 1e-9
-        ratio = lib["Xi2_c1c1_f"][non_anchor, 0] / lib["L1_c1_f"][non_anchor, 0]
+        ratio = lib["L2_c1c1_f"][non_anchor, 0] / lib["L1_c1_f"][non_anchor, 0]
         np.testing.assert_allclose(
             ratio, float(power),
             rtol=1e-4,
             err_msg=(
-                f"f=exp(-eps*c^{power}): Xi2_f/L1_f should be {power} "
+                f"f=exp(-eps*c^{power}): L2_f/L1_f should be {power} "
                 f"(Euler ODE: c²∂²(ln f)/∂c² + c∂(ln f)/∂c = {power}·c∂(ln f)/∂c)"
             ),
         )
 
     @pytest.mark.parametrize("power", [1, 2, 3])
     def test_xi2_over_l1_equals_power_direct(self, power):
-        """直接 Euler 路径（W=[1,-iω]）：Xi2_f / L1_f = power（内点，rtol 5%）。
+        """直接 Euler 路径（W=[1,-iω]）：L2_f / L1_f = power（内点，rtol 5%）。
 
         注：直接路径在样本集合端点处有 np.gradient 边界误差，因此仅检查中间段。
         """
@@ -119,26 +119,26 @@ class TestEulerODEPowerIdentity:
 
         # 仅检查内部点（排除端点边界误差）
         interior = (c_vals > 1e-9) & (c_vals < 1.3)
-        ratio = lib["Xi2_c1c1_f"][interior, 0] / lib["L1_c1_f"][interior, 0]
+        ratio = lib["L2_c1c1_f"][interior, 0] / lib["L1_c1_f"][interior, 0]
         np.testing.assert_allclose(
             ratio, float(power),
             rtol=0.05,
-            err_msg=f"Direct Euler: Xi2_f/L1_f should be {power} for f=exp(-eps*c^{power})",
+            err_msg=f"Direct Euler: L2_f/L1_f should be {power} for f=exp(-eps*c^{power})",
         )
 
     def test_xi2_minus_n_l1_is_zero(self):
-        """SVD 路径：Xi2_f − n·L1_f = 0（精确到机器精度）。
+        """SVD 路径：L2_f − n·L1_f = 0（精确到机器精度）。
 
         这是 SINDy-PI 零空间应该发现的方程：
-        Xi2_c1c1_f − n · L1_c1_f = 0  ↔  c²∂²(ln f)/∂c² = (n−1)c∂(ln f)/∂c
+        L2_c1c1_f − n · L1_c1_f = 0  ↔  c²∂²(ln f)/∂c² = (n−1)c∂(ln f)/∂c
         """
         for power in [1, 2, 3]:
             c, c_vals, d_hat, omega, dD_dc, d2D_dc2 = _make_exp_power_data(power)
             cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
             lib, _, _, _ = construct_pure_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
-            residual = lib["Xi2_c1c1_f"][:, 0] - float(power) * lib["L1_c1_f"][:, 0]
+            residual = lib["L2_c1c1_f"][:, 0] - float(power) * lib["L1_c1_f"][:, 0]
             assert np.allclose(residual, 0.0, atol=1e-10), (
-                f"f=exp(-eps*c^{power}): Xi2_f - {power}*L1_f should be 0, "
+                f"f=exp(-eps*c^{power}): L2_f - {power}*L1_f should be 0, "
                 f"max residual={np.max(np.abs(residual)):.2e}"
             )
 
@@ -169,8 +169,8 @@ class TestEulerOperatorZeroAtAnchor:
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _ = construct_pure_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
         anchor = c_vals < 1e-10
-        assert np.allclose(lib["Xi2_c1c1_f"][anchor, :], 0.0, atol=1e-10), \
-            "Xi2_f must vanish at c=0"
+        assert np.allclose(lib["L2_c1c1_f"][anchor, :], 0.0, atol=1e-10), \
+            "L2_f must vanish at c=0"
 
     @pytest.mark.parametrize("power", [1, 2])
     def test_l1_zero_at_anchor_direct(self, power):
@@ -217,48 +217,48 @@ class TestEulerOperatorDefinition:
 
 
 # ===========================================================================
-# 4. 二阶 Euler 公式结构：Xi2_f = c² · ∂²(ln f)/∂c² + L1_f
+# 4. 二阶 Euler 公式结构：L2_f = c² · ∂²(ln f)/∂c² + L1_f
 # ===========================================================================
 
 class TestXi2FormulaStructure:
-    """验证 Xi2_f = c² · β + L1_f（代码公式的数学结构正确性）。
+    """验证 L2_f = c² · β + L1_f（代码公式的数学结构正确性）。
 
     推导：
         β = ∂²(ln A)/∂c²  =  ∂²(ln f)/∂c² （纯粹二阶对数导数）
-        Xi2_f = c² · β + L1_f = c²·∂²(ln f)/∂c² + c·∂(ln f)/∂c
+        L2_f = c² · β + L1_f = c²·∂²(ln f)/∂c² + c·∂(ln f)/∂c
                               = （Euler 二阶算子作用于 ln f）
     """
 
     def test_xi2_structure_beer_lambert(self):
-        """Beer-Lambert f=exp(-εc)：β=0，故 Xi2_f = L1_f（无二阶项）。"""
+        """Beer-Lambert f=exp(-εc)：β=0，故 L2_f = L1_f（无二阶项）。"""
         c, c_vals, d_hat, omega, dD_dc, d2D_dc2 = _make_exp_power_data(1, n_c=8)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _ = construct_pure_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
-        # β = 0 because ∂²(-εc)/∂c² = 0 → Xi2_f = 0·c² + L1_f = L1_f
+        # β = 0 because ∂²(-εc)/∂c² = 0 → L2_f = 0·c² + L1_f = L1_f
         np.testing.assert_allclose(
-            lib["Xi2_c1c1_f"], lib["L1_c1_f"], atol=1e-10,
-            err_msg="Beer-Lambert: Xi2_f should equal L1_f (β₁₁ = 0)",
+            lib["L2_c1c1_f"], lib["L1_c1_f"], atol=1e-10,
+            err_msg="Beer-Lambert: L2_f should equal L1_f (β₁₁ = 0)",
         )
 
     def test_xi2_structure_gaussian(self):
         """Gaussian f=exp(-εc²)：β = ∂²(ln f)/∂c² = -2ε（常数）。
 
-        Xi2_f = c²·(-2ε) + L1_f = L1_f + (L1_f) = 2·L1_f
+        L2_f = c²·(-2ε) + L1_f = L1_f + (L1_f) = 2·L1_f
         （因为 L1_f = -2εc² 且 c²·(-2ε) = L1_f）
         """
         c, c_vals, d_hat, omega, dD_dc, d2D_dc2 = _make_exp_power_data(2, n_c=10)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _ = construct_pure_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
-        # Xi2_f - L1_f = c² · β = c² · (-2ε)
+        # L2_f - L1_f = c² · β = c² · (-2ε)
         # L1_f = -2εc², so c²·(-2ε) = L1_f
-        # → Xi2_f - L1_f = L1_f → Xi2_f = 2 L1_f
+        # → L2_f - L1_f = L1_f → L2_f = 2 L1_f
         np.testing.assert_allclose(
-            lib["Xi2_c1c1_f"], 2.0 * lib["L1_c1_f"], atol=1e-10,
-            err_msg="Gaussian: Xi2_f should equal 2·L1_f",
+            lib["L2_c1c1_f"], 2.0 * lib["L1_c1_f"], atol=1e-10,
+            err_msg="Gaussian: L2_f should equal 2·L1_f",
         )
 
     def test_xi2_minus_l1_equals_c2_beta(self):
-        """Xi2_f − L1_f = c² · ∂²(ln f)/∂c²（数值验证，内部点）。
+        """L2_f − L1_f = c² · ∂²(ln f)/∂c²（数值验证，内部点）。
 
         此恒等式验证代码的 beta 计算路径（beta = d²A/A - alpha²）正确。
         """
@@ -272,15 +272,15 @@ class TestXi2FormulaStructure:
         d2_ln_f = np.gradient(np.gradient(ln_f_vals, dc), dc)
         expected_c2_beta = c_vals ** 2 * d2_ln_f
 
-        # Xi2_f - L1_f = c² · β
-        diff = lib["Xi2_c1c1_f"][:, 0] - lib["L1_c1_f"][:, 0]
+        # L2_f - L1_f = c² · β
+        diff = lib["L2_c1c1_f"][:, 0] - lib["L1_c1_f"][:, 0]
 
         # 内点比较（边界有数值微分误差）
         interior = (c_vals > 0.2) & (c_vals < 1.3)
         np.testing.assert_allclose(
             diff[interior], expected_c2_beta[interior],
             rtol=0.05,
-            err_msg="Xi2_f - L1_f should equal c² · d²(ln_f)/dc²",
+            err_msg="L2_f - L1_f should equal c² · d²(ln_f)/dc²",
         )
 
 
@@ -325,8 +325,8 @@ class TestTwoComponentSystem:
         anchor = c_vals < 1e-10
         assert np.allclose(lib["L1_c1_f"][anchor, :], 0.0, atol=1e-10), \
             "L1_f must be exactly 0 at c=0 (two-component system)"
-        assert np.allclose(lib["Xi2_c1c1_f"][anchor, :], 0.0, atol=1e-10), \
-            "Xi2_f must be exactly 0 at c=0 (two-component system)"
+        assert np.allclose(lib["L2_c1c1_f"][anchor, :], 0.0, atol=1e-10), \
+            "L2_f must be exactly 0 at c=0 (two-component system)"
 
         # 库形状 (N, K=2)
         for key, val in lib.items():

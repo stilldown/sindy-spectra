@@ -252,9 +252,9 @@ class TestTensorEulerLibraryConsistency:
         np.testing.assert_allclose(lib_t["L1_c1_g"], lib_f["L1_c1_g"], atol=1e-8)
 
     def test_xi2_matches_1d(self):
-        """1D：Xi2_c1c1_f 与展平路径一致。"""
+        """1D：L2_c1c1_f 与展平路径一致。"""
         lib_t, lib_f, _, _, _, _ = self._compare_1d(alpha=2.0, n_c=6, n_wl=32, k_value=1)
-        np.testing.assert_allclose(lib_t["Xi2_c1c1_f"], lib_f["Xi2_c1c1_f"], atol=1e-8)
+        np.testing.assert_allclose(lib_t["L2_c1c1_f"], lib_f["L2_c1c1_f"], atol=1e-8)
 
     def test_ln_f_matches_1d(self):
         """1D：ln_f（零阶项）与展平路径一致。"""
@@ -269,7 +269,7 @@ class TestTensorEulerLibraryConsistency:
         expected_keys = {
             "ln_f", "g", "ln_f^2", "g^2",
             "L1_c1_f", "L1_c1_g",
-            "Xi2_c1c1_f", "Xi2_c1c1_g",
+            "L2_c1c1_f", "L2_c1c1_g",
         }
         assert expected_keys.issubset(set(lib_t.keys()))
 
@@ -283,7 +283,7 @@ class TestTensorEulerLibraryConsistency:
             assert f"L1_c{j}_g" in lib_t
         for i in range(1, 3):
             for j in range(1, 3):
-                assert f"Xi2_c{i}c{j}_f" in lib_t
+                assert f"L2_c{i}c{j}_f" in lib_t
 
     def test_2d_l1_matches_flat(self):
         """2D：L1_c1_f 和 L1_c2_f 与展平路径一致。"""
@@ -486,13 +486,13 @@ class TestBuildFiberEulerLibrary:
     """测试 build_fiber_euler_library 的正确性。"""
 
     def test_output_structure_1d(self):
-        """1 条纤维：库应含 ln_f, g, L1_c1_f, Xi2_c1c1_f 等键。"""
+        """1 条纤维：库应含 ln_f, g, L1_c1_f, L2_c1c1_f 等键。"""
         fibers, c_axes, wl = _beer_lambert_fibers([2.0], n_per_fiber=5)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, flibs, basis, A, w = build_fiber_euler_library(fibers, c_axes, wl, cfg)
         assert "ln_f" in lib
         assert "L1_c1_f" in lib
-        assert "Xi2_c1c1_f" in lib
+        assert "L2_c1c1_f" in lib
         assert lib["L1_c1_f"].shape == (5, 1)
 
     def test_output_structure_3d(self):
@@ -505,10 +505,10 @@ class TestBuildFiberEulerLibrary:
         # 对角项存在
         for j in range(1, d + 1):
             assert f"L1_c{j}_f" in lib
-            assert f"Xi2_c{j}c{j}_f" in lib
+            assert f"L2_c{j}c{j}_f" in lib
         # 非对角项不存在
-        assert "Xi2_c1c2_f" not in lib
-        assert "Xi2_c1c3_f" not in lib
+        assert "L2_c1c2_f" not in lib
+        assert "L2_c1c3_f" not in lib
 
     def test_n_total_matches_sum(self):
         """展平库行数应等于 Σn_j。"""
@@ -754,8 +754,8 @@ class TestRunFiberDiscovery:
         fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0])
         result = run_fiber_discovery(fibers, c_axes, wl)
         for name in result.operator_names:
-            assert "Xi2_c1c2" not in name, f"不应出现非对角算子 {name}"
-            assert "Xi2_c2c1" not in name, f"不应出现非对角算子 {name}"
+            assert "L2_c1c2" not in name, f"不应出现非对角算子 {name}"
+            assert "L2_c2c1" not in name, f"不应出现非对角算子 {name}"
 
     def test_high_dim_fiber_discovery(self):
         """高维（d=8）纤维发现应成功，体现退化策略的可扩展性。"""
@@ -778,5 +778,5 @@ class TestRunFiberDiscovery:
         result = run_tensor_discovery(approx, target_c_axes, wl, cfg)
         assert result.metadata["grid_shape"] == (3, 3)
         # 加法近似后全张量路径可计算非对角 Euler 算子（pretty_name 格式）
-        # pretty_name("Xi2_c1c2_f") == "c1c2d2_f/dc1dc2"
+        # pretty_name("L2_c1c2_f") == "c1c2d2_f/dc1dc2"
         assert "c1c2d2_f/dc1dc2" in result.operator_names

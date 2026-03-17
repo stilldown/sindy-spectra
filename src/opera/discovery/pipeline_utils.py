@@ -77,7 +77,7 @@ def pretty_name(name: str) -> str:
             return f"c{ci}d_ln_f/dc{ci}"
         else:
             return f"c{ci}d_g/dc{ci}"
-    m2 = re.match(r"Xi2_c(\d+)c(\d+)_([fg])", name)
+    m2 = re.match(r"L2_c(\d+)c(\d+)_([fg])", name)
     if m2:
         i, j, fg = m2.groups()
         if i == j:
@@ -130,8 +130,8 @@ def construct_pure_library(
 
     特征库结构（f 和 g 子空间严格分离，确保 J_f + J_g == J）::
 
-        f 子空间: ln_f, ln_f^2, L1_c{j}_f, Xi2_c{i}c{j}_f
-        g 子空间: g,    g^2,    L1_c{j}_g, Xi2_c{i}c{j}_g
+        f 子空间: ln_f, ln_f^2, L1_c{j}_f, L2_c{i}c{j}_f
+        g 子空间: g,    g^2,    L1_c{j}_g, L2_c{i}c{j}_g
 
     .. warning::
         库中**不得**加入 f×g 交叉项（如 ``ln_f*g``）。交叉项既不属于 f 子空间
@@ -256,8 +256,8 @@ def construct_pure_library(
     for i in range(n_controls):
         for j in range(n_controls):
             val = Xi2[:, i, j, :]
-            library[f"Xi2_c{i+1}c{j+1}_f"] = np.real(val)
-            library[f"Xi2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means + 1e-9)
+            library[f"L2_c{i+1}c{j+1}_f"] = np.real(val)
+            library[f"L2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means + 1e-9)
 
     return library, spectral_basis, A, omega_means
 
@@ -414,16 +414,16 @@ def build_direct_euler_library(
     L_euler = c[:, :, np.newaxis] * alpha      # broadcast: (N, d, P)
 
     # 二阶 Euler 算子（N, d, d, P）
-    Xi2_direct = np.zeros_like(d2D_dc2)
+    L2_direct = np.zeros_like(d2D_dc2)
     for i in range(n_controls):
         for j in range(n_controls):
             if i == j:
-                Xi2_direct[:, i, j, :] = (
+                L2_direct[:, i, j, :] = (
                     c[:, i, np.newaxis] ** 2 * beta[:, i, j, :]
                     + L_euler[:, i, :]
                 )
             else:
-                Xi2_direct[:, i, j, :] = (
+                L2_direct[:, i, j, :] = (
                     c[:, i, np.newaxis] * c[:, j, np.newaxis] * beta[:, i, j, :]
                 )
 
@@ -447,9 +447,9 @@ def build_direct_euler_library(
     # 二阶 Euler 算子
     for i in range(n_controls):
         for j in range(n_controls):
-            fi, gi = _fg_fit(Xi2_direct[:, i, j, :])
-            library[f"Xi2_c{i+1}c{j+1}_f"] = fi[:, np.newaxis]
-            library[f"Xi2_c{i+1}c{j+1}_g"] = gi[:, np.newaxis]
+            fi, gi = _fg_fit(L2_direct[:, i, j, :])
+            library[f"L2_c{i+1}c{j+1}_f"] = fi[:, np.newaxis]
+            library[f"L2_c{i+1}c{j+1}_g"] = gi[:, np.newaxis]
 
     # ── 步骤 3：参考谱与响应系数 ──────────────────────────────────────────────
     # 参考谱：D̂ 沿样本轴均值（作为单一"组分"谱基）

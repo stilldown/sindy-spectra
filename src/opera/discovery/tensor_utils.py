@@ -396,17 +396,17 @@ def build_tensor_euler_library(
         L1_tensor[..., j, :] = c_j * alpha[..., j, :]
 
     # Ξ_{ii} = c_i² β_ii + L_i（对角）；Ξ_{ij} = c_i c_j β_ij（非对角）
-    Xi2_tensor = np.zeros_like(d2A_tensor)                      # (*grid, d, d, K)
+    L2_tensor = np.zeros_like(d2A_tensor)                      # (*grid, d, d, K)
     for i in range(d):
         c_i = c_mesh[i][..., np.newaxis]                        # (*grid, 1)
         for j in range(d):
             c_j = c_mesh[j][..., np.newaxis]                    # (*grid, 1)
             if i == j:
-                Xi2_tensor[..., i, j, :] = (
+                L2_tensor[..., i, j, :] = (
                     c_i ** 2 * beta[..., i, j, :] + L1_tensor[..., i, :]
                 )
             else:
-                Xi2_tensor[..., i, j, :] = c_i * c_j * beta[..., i, j, :]
+                L2_tensor[..., i, j, :] = c_i * c_j * beta[..., i, j, :]
 
     # ── 步骤 7：f/g 分离 → 实值张量算子库 ───────────────────────────────────
     # 零阶项
@@ -429,9 +429,9 @@ def build_tensor_euler_library(
     # 二阶 Euler 算子
     for i in range(d):
         for j in range(d):
-            val = Xi2_tensor[..., i, j, :]                      # (*grid, K)
-            library_tensor[f"Xi2_c{i+1}c{j+1}_f"] = np.real(val)
-            library_tensor[f"Xi2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means + 1e-9)
+            val = L2_tensor[..., i, j, :]                      # (*grid, K)
+            library_tensor[f"L2_c{i+1}c{j+1}_f"] = np.real(val)
+            library_tensor[f"L2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means + 1e-9)
 
     # ── 步骤 8：展平 → (N, K) 供 solve_nullspace 使用 ──────────────────────
     library: dict[str, np.ndarray] = {
@@ -688,7 +688,7 @@ def build_fiber_euler_library(
     -------
     library : dict[str, ndarray(N_total, K)]
         展平算子库，可直接传入 ``solve_nullspace``。
-        键名与全张量路径相同：``ln_f``, ``g``, ``L1_c{j}_f``, ``Xi2_c{j}c{j}_f``, …
+        键名与全张量路径相同：``ln_f``, ``g``, ``L1_c{j}_f``, ``L2_c{j}c{j}_f``, …
     fiber_libraries : list of dict[str, ndarray(n_j, K)], length d
         每条纤维的 1D 张量库，形状 ``(n_j, K)``。
         ``fiber_libraries[j][key][i, k]`` = 纤维 j 第 i 点第 k 组分的算子值。
@@ -746,7 +746,7 @@ def build_fiber_euler_library(
     for j in range(d):
         all_keys += [
             f"L1_c{j+1}_f",    f"L1_c{j+1}_g",
-            f"Xi2_c{j+1}c{j+1}_f", f"Xi2_c{j+1}c{j+1}_g",
+            f"L2_c{j+1}c{j+1}_f", f"L2_c{j+1}c{j+1}_g",
         ]
 
     # 初始化全零展平库
@@ -792,8 +792,8 @@ def build_fiber_euler_library(
             "g^2":                        g_j ** 2,
             f"L1_c{j+1}_f":              np.real(L_j),
             f"L1_c{j+1}_g":              -np.imag(L_j) / (omega_means + 1e-9),
-            f"Xi2_c{j+1}c{j+1}_f":      np.real(Xi_jj),
-            f"Xi2_c{j+1}c{j+1}_g":      -np.imag(Xi_jj) / (omega_means + 1e-9),
+            f"L2_c{j+1}c{j+1}_f":      np.real(Xi_jj),
+            f"L2_c{j+1}c{j+1}_g":      -np.imag(Xi_jj) / (omega_means + 1e-9),
         }
         fiber_libraries.append(fiber_lib)
 

@@ -228,8 +228,8 @@ class MainWindow(QMainWindow):
             else:
                 return f"c{ci}\\partial {var}/\\partial c{ci}"
 
-        # Xi2 形式: Xi2_c1c2_f 等
-        m2 = re.match(r"Xi2_c(\d+)c(\d+)_([fg])", name)
+        # Xi2 形式: L2_c1c2_f 等
+        m2 = re.match(r"L2_c(\d+)c(\d+)_([fg])", name)
         if m2:
             i, j, fg = m2.groups()
             var = "\\ln f" if fg == "f" else "g"

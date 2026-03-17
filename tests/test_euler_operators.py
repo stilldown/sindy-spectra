@@ -7,7 +7,7 @@
    - L_i / c_i = 常数（Beer-Lambert 型数据）
 
 2. **对角 Xi2 公式**：Ξ_{ii} = c_i² β_{ii} + L_i（含一阶修正项）
-   - 对 D = exp(alpha*c1)*P(ω)：Xi2_11 = L1（因为 beta_11=0）
+   - 对 D = exp(alpha*c1)*P(ω)：L2_11 = L1（因为 beta_11=0）
    - 1.md 公式：Ξ_{ii} = D^{-1}(c_i² ∂²D/∂c_i²) - (L_i² - L_i)
 
 3. **非对角 Xi2 公式**：Ξ_{ij} = c_i c_j β_{ij}（无修正项）
@@ -41,7 +41,7 @@ def _beer_lambert_data_1d(alpha: float = 2.0, n_c: int = 4, n_wl: int = 32):
 
     Euler 算子精确结果：
         L1_c1 = c1 * alpha
-        Xi2_c1c1 = c1 * alpha  (= L1_c1，因 beta_11 = 0 on this model)
+        L2_c1c1 = c1 * alpha  (= L1_c1，因 beta_11 = 0 on this model)
     """
     c1_vals = np.linspace(0.0, 1.5, n_c)
     c = c1_vals.reshape(-1, 1)
@@ -130,7 +130,7 @@ class TestXi2DiagonalFormula:
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _ = construct_pure_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
         np.testing.assert_allclose(
-            lib["Xi2_c1c1_f"], lib["L1_c1_f"], atol=1e-8,
+            lib["L2_c1c1_f"], lib["L1_c1_f"], atol=1e-8,
             err_msg="Xi2 diagonal should equal L1 when D = exp(alpha*c1)*P(omega)"
         )
 
@@ -139,7 +139,7 @@ class TestXi2DiagonalFormula:
         c, d_hat, omega, dD_dc, d2D_dc2, c1_vals, alpha = _beer_lambert_data_1d()
         lib, _, _, _ = build_direct_euler_library(d_hat, dD_dc, d2D_dc2, omega, c)
         np.testing.assert_allclose(
-            lib["Xi2_c1c1_f"], lib["L1_c1_f"], atol=1e-8,
+            lib["L2_c1c1_f"], lib["L1_c1_f"], atol=1e-8,
             err_msg="Direct Euler: Xi2 diagonal should equal L1 for Beer-Lambert data"
         )
 
@@ -149,7 +149,7 @@ class TestXi2DiagonalFormula:
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _ = construct_pure_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
         anchor_mask = c1_vals == 0.0
-        assert np.allclose(lib["Xi2_c1c1_f"][anchor_mask, :], 0.0, atol=1e-10)
+        assert np.allclose(lib["L2_c1c1_f"][anchor_mask, :], 0.0, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -181,10 +181,10 @@ class TestDirectEulerLibraryShapes:
         assert omega_means.shape == (1,)
 
     def test_expected_keys_present(self):
-        """库中必须包含 ln_f, g, L1_c1_f, L1_c1_g, Xi2_c1c1_f, Xi2_c1c1_g。"""
+        """库中必须包含 ln_f, g, L1_c1_f, L1_c1_g, L2_c1c1_f, L2_c1c1_g。"""
         c, d_hat, omega, dD_dc, d2D_dc2, _, _ = _beer_lambert_data_1d()
         lib, _, _, _ = build_direct_euler_library(d_hat, dD_dc, d2D_dc2, omega, c)
-        for key in ["ln_f", "g", "L1_c1_f", "L1_c1_g", "Xi2_c1c1_f", "Xi2_c1c1_g"]:
+        for key in ["ln_f", "g", "L1_c1_f", "L1_c1_g", "L2_c1c1_f", "L2_c1c1_g"]:
             assert key in lib, f"Missing key: {key}"
 
     def test_two_controls_key_count(self):
@@ -210,7 +210,7 @@ class TestPrettyNameDiagonalXi2:
 
     def test_diagonal_xi2_name_contains_euler_structure(self):
         """对角 Xi2 名称应体现 c_i ∂(c_i ∂/∂c_i) 的 Euler 结构。"""
-        name_f = pretty_name("Xi2_c1c1_f")
+        name_f = pretty_name("L2_c1c1_f")
         # 应包含外层 c1d(...)/dc1 形式，并且括号内也含 c1d...
         assert name_f.count("c1d") >= 2, (
             f"Diagonal Xi2 name should show nested Euler structure c1d(c1d.../dc1)/dc1, "
@@ -219,7 +219,7 @@ class TestPrettyNameDiagonalXi2:
 
     def test_off_diagonal_xi2_name_unchanged(self):
         """非对角 Xi2 名称应保持 c_i c_j 乘法形式。"""
-        name_f = pretty_name("Xi2_c1c2_f")
+        name_f = pretty_name("L2_c1c2_f")
         assert "c1c2" in name_f, f"Unexpected off-diagonal name: {name_f}"
 
 
@@ -334,7 +334,7 @@ class TestInverseLibraryCScaling:
         lib, _, _, _ = construct_inverse_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
         anchor = np.where(c1_vals == 0.0)[0]
         for n in anchor:
-            assert abs(lib["Xi2_c1c1_f"][n, n]) < 1e-10
+            assert abs(lib["L2_c1c1_f"][n, n]) < 1e-10
 
     def test_xi2_formula_consistency(self):
         """Xi2[n,n] = c_n² * beta[n,n] + L1[n,n]（公式结构验证，非绝对值验证）。
@@ -348,12 +348,12 @@ class TestInverseLibraryCScaling:
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _ = construct_inverse_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
         # 所有输出应为有限值
-        assert np.all(np.isfinite(lib["Xi2_c1c1_f"]))
+        assert np.all(np.isfinite(lib["L2_c1c1_f"]))
         assert np.all(np.isfinite(lib["L1_c1_f"]))
         # 零锚点处两者均为零
         anchor = np.where(c1_vals == 0.0)[0]
         for n in anchor:
-            assert abs(lib["Xi2_c1c1_f"][n, n]) < 1e-10
+            assert abs(lib["L2_c1c1_f"][n, n]) < 1e-10
             assert abs(lib["L1_c1_f"][n, n]) < 1e-10
 
     def test_not_using_global_diagonal_formula(self):

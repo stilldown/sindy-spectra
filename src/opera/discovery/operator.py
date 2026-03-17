@@ -183,8 +183,8 @@ def construct_inverse_library(
     for i in range(n_controls):
         for j in range(n_controls):
             val = Xi2[:, i, j, :]
-            library[f"Xi2_c{i+1}c{j+1}_f"] = np.real(val)
-            library[f"Xi2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means[None, :] + 1e-9)
+            library[f"L2_c{i+1}c{j+1}_f"] = np.real(val)
+            library[f"L2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means[None, :] + 1e-9)
 
     return library, spectral_basis, A, omega_means
 
@@ -503,10 +503,10 @@ def compute_weak_operators(
             beta_ij_full[mask_w] = d2A_ij[mask_w] / A_hat[mask_w]
             beta_ij = beta_ij_full - alpha_basic[i] * alpha_basic[j]   # (N, N)
             if i == j:
-                Xi2_ij = c[:, i, np.newaxis] ** 2 * beta_ij + L1_basic[i]
+                L2_ij = c[:, i, np.newaxis] ** 2 * beta_ij + L1_basic[i]
             else:
-                Xi2_ij = c[:, i, np.newaxis] * c[:, j, np.newaxis] * beta_ij
-            weak[f"L2_c{i+1}c{j+1}_weak"] = psi[:, None] * Xi2_ij
+                L2_ij = c[:, i, np.newaxis] * c[:, j, np.newaxis] * beta_ij
+            weak[f"L2_c{i+1}c{j+1}_weak"] = psi[:, None] * L2_ij
 
     # include original library entries weighted as a fallback
     for name, mat in lib.items():

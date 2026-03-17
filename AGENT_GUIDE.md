@@ -48,8 +48,8 @@ A_k(c) = f_k(c) · exp(−i ω_k · g_k(c))
 | `g` | `−Im(ln A_k) / ω_k` | 相位斜率（零阶） |
 | `L1_j_f` | `c_j · ∂(ln f_k)/∂c_j` | **一阶 Euler 算子**作用于 ln f |
 | `L1_j_g` | `c_j · ∂g_k/∂c_j` | 一阶 Euler 算子作用于 g |
-| `Xi2_ij_f` | `c_i c_j ∂²(ln f_k)/∂c_i∂c_j` (i≠j) 或 `c_i² ∂²(ln f_k)/∂c_i² + L1_i_f` (i=j) | **二阶 Euler 算子**（含一阶修正项） |
-| `Xi2_ij_g` | 同上，作用于 g | 二阶 Euler 算子作用于 g |
+| `L2_ij_f` | `c_i c_j ∂²(ln f_k)/∂c_i∂c_j` (i≠j) 或 `c_i² ∂²(ln f_k)/∂c_i² + L1_i_f` (i=j) | **二阶 Euler 算子**（含一阶修正项） |
+| `L2_ij_g` | 同上，作用于 g | 二阶 Euler 算子作用于 g |
 | `ln_f^2`, `g^2` | 平方非线性项 | 非线性 Euler 项 |
 
 > **关键**：以上每个条目均是 `∂(ln f)/∂c`（或更高阶）的 Euler 缩放版本，它们共同构成一族"候选微分方程项"。
@@ -70,9 +70,9 @@ A_k(c) = f_k(c) · exp(−i ω_k · g_k(c))
 | 物理模型 | f(c) 形式 | 被发现的 ODE | 方程意义 |
 |----------|-----------|-------------|---------|
 | Beer-Lambert 吸收 | `exp(−ε c)` | `L1_f − ln_f = 0` | `c ∂(ln f)/∂c = ln f` → f 关于 ln c 线性 |
-| Beer-Lambert（二阶验证） | `exp(−ε c)` | `Xi2_f − L1_f = 0` | `c² ∂²(ln f)/∂c² + c ∂(ln f)/∂c = c ∂(ln f)/∂c` → 即上式 |
+| Beer-Lambert（二阶验证） | `exp(−ε c)` | `L2_f − L1_f = 0` | `c² ∂²(ln f)/∂c² + c ∂(ln f)/∂c = c ∂(ln f)/∂c` → 即上式 |
 | 高斯型浓度响应 | `exp(−ε c²)` | `L1_f − 2·ln_f = 0` | `c ∂(ln f)/∂c = 2 ln f` → f 关于 c² 指数型 |
-| 幂次律 | `c^n` | `Xi2_f = 0` | `c² ∂²(ln f)/∂c² + c ∂(ln f)/∂c = 0` → Euler 方程，解为 c^n |
+| 幂次律 | `c^n` | `L2_f = 0` | `c² ∂²(ln f)/∂c² + c ∂(ln f)/∂c = 0` → Euler 方程，解为 c^n |
 | Langmuir/Hill（近似） | `K c/(1+K c)` | 含 `ln_f^2` 非线性项 | 超越方程，需高阶库项 |
 
 ### 5. 为什么必须有零浓度锚点
@@ -150,7 +150,7 @@ out = run_discovery(spectra, factors, wavelengths, cfg)
 - 若需高阶 Euler 项（如 `c³ ∂³(ln f)/∂c³`），在 `pipeline_utils.py` / `operator.py` 中添加
 - 非线性项（如 `ln_f^2`）用于捕获超越 Euler 线性方程的物理行为（如 Langmuir/Hill）
 - 跨组分交叉项（如 `L1_f * L1_g`）目前未实现，若物理上 f 与 g 存在耦合可按需添加
-- 多变量控制下，非对角 `Xi2_c{i}c{j}` 算子捕获浓度间的交叉 Euler 偏导（对应混合偏微分方程项）
+- 多变量控制下，非对角 `L2_c{i}c{j}` 算子捕获浓度间的交叉 Euler 偏导（对应混合偏微分方程项）
 
 ## GUI 提示
 - 入口：`src/opera/gui/main_window.py`。
