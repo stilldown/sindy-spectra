@@ -114,7 +114,8 @@ def run_discovery(
     if cfg.use_weak_form:
         # 弱形式路径：D̂ @ D† 是 N×N 方阵（帽矩阵），无需截断到 k_eff。
         # build_weak_form_library 内部做 pinv → A = D̂ @ D†（N×N 方阵） → ln A → IBP。
-        # 组分数 K = N（样本数），由矩阵乘法自然确定；k_eff 参数已弃用不生效。
+        # 组分数 K = N（样本数），由矩阵乘法自然确定；
+        # k_eff 参数被 build_weak_form_library 接受但会触发 DeprecationWarning 并被忽略。
         from .operator import build_weak_form_library
         lib, _psi_names, _Psi, basis, A = build_weak_form_library(
             d_hat=d_hat,

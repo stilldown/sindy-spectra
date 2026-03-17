@@ -53,28 +53,48 @@ def construct_inverse_library(
     c: np.ndarray,
     config: DiscoveryConfig,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
-    r"""伪逆算子库（不做 SVD 谱基投影，直接乘以 D 逆得到完整帽矩阵）。
+    r"""伪逆算子库（不做 SVD 截断，使用完整 D†-基作为谱基）。
 
     数学基础
     --------
     D̂ 形状为 (N, P)，其 Moore-Penrose 伪逆 D† 形状为 (P, N)。
-    二者相乘 **D̂ @ D† ∈ ℂ^{N×N}** 是方阵（帽矩阵 / 正交投影算子），
-    无需人为截断到组分数 k_eff。
 
-    对每个频率 ω 的对角线算子::
+    与 SVD 路径（``construct_pure_library``）完全相同的公式，只是谱基不同::
 
-        L_j^{inv}(ω) = diag(D† · ∂D̂/∂c_j)            （一阶）
-        Ξ_{ij}^{inv}(ω) = diag(D† · ∂²D̂/(∂c_i∂c_j))  （二阶）
+        SVD 路径：spectral_basis = Vt[:K, :]       （前 K 个右奇异向量，截断）
+        伪逆路径：spectral_basis = D†.T              （完整 D†-基，K = N，无截断）
 
-    其中 D† = pinv(D̂) ∈ ℂ^{P×N}。乘积 D† @ ∂D̂/∂c_j 为 (P, P) 方阵，
-    取其对角线前 N 个元素（对应 N 个样本方向的分量）。
+    投影系数 A（帽矩阵，方阵，K = N）::
 
-    投影系数 A（帽矩阵，方阵）::
+        A(n, k) = D̂(n, :) · D†(:, k)  = (D̂ @ D†)[n, k] ∈ ℂ^{N×N}
 
-        A = D̂ @ D†   ∈ ℂ^{N×N}   （完整帽矩阵，无截断）
+    一阶对数导数（按元素，各样本独立）::
 
-    组分数 K = N，由矩阵乘法自然确定，不依赖用户指定的 k_value。
-    ln A 对帽矩阵逐元素取复数对数，此即"lnA 的另一种实现方式"。
+        α_j(n, k) = ∂A(n,k)/∂c_j(n) / A(n,k)
+                  = (∂D̂(n,:)/∂c_j · D†(:,k)) / A(n,k)
+
+    一阶 Euler 算子（含 c_j 缩放，来自 1.md）::
+
+        L_j(n, k) = c_j(n) · α_j(n, k)
+
+    二阶对数导数（按元素）::
+
+        β_{ij}(n,k) = ∂²A(n,k)/∂c_i∂c_j / A(n,k)  -  α_i(n,k) · α_j(n,k)
+
+    二阶 Euler 算子（含 c 缩放，1.md 公式）::
+
+        Ξ_{ii}(n,k) = c_i(n)² · β_{ii}(n,k) + L_i(n,k)   （对角）
+        Ξ_{ij}(n,k) = c_i(n) · c_j(n) · β_{ij}(n,k)       （非对角，i ≠ j）
+
+    .. note::
+        与旧实现的区别：旧版用 ``diag(D† @ ∂D̂/∂c_j)`` 计算一阶算子，
+        这是对所有样本求和的频域全局量（形如 ``Σ_n D†[k,n] * ∂D̂[n,j,k]``），
+        而非每个样本点的独立对数导数。新版改为与 SVD 路径相同的按元素投影::
+
+            ∂A[:,j,:] = (∂D̂[:,j,:] @ spectral_basis.conj().T)
+                        （N×N 矩阵，每行对应一个样本，每列对应一个 D†-基组分）
+
+        从而保证 L_i / c_i = 常数（Euler 算子核心特性），零锚点处 L_i = 0。
 
     Returns
     -------
@@ -83,57 +103,88 @@ def construct_inverse_library(
     A              : ndarray (N, N)   完整帽矩阵 D̂ @ D†
     omega_means    : ndarray (N,)     各分量有效频率
     """
+    from scipy.linalg import svd as _svd
+
     # D† = pinv(D̂) ∈ ℂ^{P×N}
     D_dag = np.linalg.pinv(d_hat)
 
     n_samples, n_freq = d_hat.shape
     n_controls = c.shape[1]
 
-    # D̂ @ D† 是 N×N 方阵，无需截断到任何 k_eff
-    # 组分数 = 样本数 N，由矩阵乘法自然确定
-    A = d_hat @ D_dag                               # (N, N) — 完整帽矩阵，方阵
-    k_eff = n_samples                               # 组分数由帽矩阵列数自然决定
-    spectral_basis = D_dag.T                        # (N, P)
-    omega_means = np.real(
+    # 帽矩阵：D̂ @ D† ∈ ℂ^{N×N}，组分数 K = N
+    A             = d_hat @ D_dag                                # (N, N)
+    k_eff         = n_samples
+    spectral_basis = D_dag.T                                      # (N, P)
+    omega_means   = np.real(
         np.diag(spectral_basis @ np.diag(omega) @ spectral_basis.conj().T)
-    )                                               # (N,)
+    )                                                             # (N,)
 
+    # ── Euler 算子（与 construct_pure_library 相同公式，只是谱基不同）────────
+    # dA[n, j, k] = ∂D̂(n,:)/∂c_j · D†(:,k) = dD_dc[n,j,:] @ spectral_basis[k,:].conj()
+    dA = np.zeros((n_samples, n_controls, k_eff), dtype=complex)
+    for j in range(n_controls):
+        dA[:, j, :] = dD_dc[:, j, :] @ spectral_basis.conj().T  # (N,P)@(P,N) = (N,N)
+
+    d2A = np.zeros((n_samples, n_controls, n_controls, k_eff), dtype=complex)
+    for i in range(n_controls):
+        for j in range(n_controls):
+            d2A[:, i, j, :] = d2D_dc2[:, i, j, :] @ spectral_basis.conj().T
+
+    # 屏蔽极小 A 避免数值爆炸
+    weights = np.abs(A)
+    mask    = weights > 1e-9 * np.max(weights)
+
+    # alpha_j(n,k) = dA[n,j,k] / A[n,k]（无 c 缩放的一阶对数导数）
+    alpha  = np.zeros_like(dA)
+    L1_mask = mask[:, None, :].repeat(n_controls, axis=1)
+    A_exp1  = A[:, None, :].repeat(n_controls, axis=1)
+    alpha[L1_mask] = dA[L1_mask] / A_exp1[L1_mask]
+
+    # beta_ij（无 c 缩放的二阶对数导数）
+    beta   = np.zeros_like(d2A)
+    term1  = np.zeros_like(d2A)
+    tm     = mask[:, None, None, :].repeat(n_controls, axis=1).repeat(n_controls, axis=2)
+    A_exp2 = A[:, None, None, :].repeat(n_controls, axis=1).repeat(n_controls, axis=2)
+    term1[tm] = d2A[tm] / A_exp2[tm]
+    for i in range(n_controls):
+        for j in range(n_controls):
+            beta[:, i, j, :] = term1[:, i, j, :] - alpha[:, i, :] * alpha[:, j, :]
+
+    # L_j = c_j · alpha_j（含 c_j 缩放的一阶 Euler 算子）
+    L1 = np.zeros_like(dA)
+    for j in range(n_controls):
+        L1[:, j, :] = c[:, j, np.newaxis] * alpha[:, j, :]
+
+    # Ξ_ii = c_i² β_ii + L_i（对角）；Ξ_ij = c_i c_j β_ij（非对角）
+    Xi2 = np.zeros_like(d2A)
+    for i in range(n_controls):
+        for j in range(n_controls):
+            if i == j:
+                Xi2[:, i, j, :] = (c[:, i, np.newaxis] ** 2 * beta[:, i, j, :]
+                                    + L1[:, i, :])
+            else:
+                Xi2[:, i, j, :] = (c[:, i, np.newaxis] * c[:, j, np.newaxis]
+                                    * beta[:, i, j, :])
+
+    # ── 库组装 ────────────────────────────────────────────────────────────────
     library: Dict[str, np.ndarray] = {}
 
-    # 零阶：对帽矩阵 A 逐元素取复数对数（lnA 的另一种实现方式）
-    ln_A = np.log(A + 1e-12)                        # (N, N)
+    # 零阶：对帽矩阵 A 逐元素取复数对数
+    ln_A = np.log(A + 1e-12)                                     # (N, N)
     library["ln_f"] = np.real(ln_A)
     library["g"]    = -np.imag(ln_A) / (omega_means[None, :] + 1e-9)
 
-    # 一阶：diag(D† @ ∂D̂/∂c_j) → (P, P) 方阵的对角线
-    # 取前 k_eff = N 个元素；当 P < N 时补零（保证形状为 (N, N)）
-    # D_dag: (P, N)，dD_dc[:,j,:]: (N, P)  →  D_dag @ dD_dc = (P, P) 方阵
-    def _pad_diag(mat: np.ndarray, target_len: int) -> np.ndarray:
-        """取方阵对角线并补零/截断到 target_len 个元素。"""
-        d = np.diag(mat)                              # (P,)
-        padded = np.zeros(target_len, dtype=d.dtype)
-        take = min(len(d), target_len)
-        padded[:take] = d[:take]
-        return padded                                 # (target_len,)
-
+    # 一阶 Euler 算子
     for j in range(n_controls):
-        term = D_dag @ dD_dc[:, j, :]               # (P, P)
-        diag_term = _pad_diag(term, k_eff)           # (N,)
-        lib_j = np.tile(diag_term, (n_samples, 1))   # (N, N)
-        library[f"L1_c{j+1}_f"] = np.real(lib_j)
-        library[f"L1_c{j+1}_g"] = -np.imag(lib_j) / (omega_means[None, :] + 1e-9)
+        library[f"L1_c{j+1}_f"] = np.real(L1[:, j, :])
+        library[f"L1_c{j+1}_g"] = -np.imag(L1[:, j, :]) / (omega_means[None, :] + 1e-9)
 
-    # 二阶：diag(D† @ ∂²D̂/(∂c_i∂c_j))，同理补零到 N 个元素
+    # 二阶 Euler 算子
     for i in range(n_controls):
         for j in range(n_controls):
-            term = D_dag @ d2D_dc2[:, i, j, :]      # (P, P)
-            diag_term = _pad_diag(term, k_eff)       # (N,)
-            lib_f = np.tile(np.real(diag_term), (n_samples, 1))
-            lib_g = np.tile(
-                -np.imag(diag_term) / (omega_means + 1e-9), (n_samples, 1)
-            )
-            library[f"Xi2_c{i+1}c{j+1}_f"] = lib_f
-            library[f"Xi2_c{i+1}c{j+1}_g"] = lib_g
+            val = Xi2[:, i, j, :]
+            library[f"Xi2_c{i+1}c{j+1}_f"] = np.real(val)
+            library[f"Xi2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means[None, :] + 1e-9)
 
     return library, spectral_basis, A, omega_means
 
@@ -293,7 +344,7 @@ def build_weak_form_library(
 
     # D̂ @ D† 是 N×N 方阵，组分数 = N（样本数），无需截断
     spectral_basis = D_dag.T                         # (N, n_freq)
-    A = d_hat @ D_dag                               # (N, N) — 完整帽矩阵，方阵
+    A = d_hat @ D_dag                               # (N, N) — 完整帽矩阵（hat matrix），方阵
 
     # 有效频率 ω_k = Re(diag(P diag(ω) P†))，用于 f/g 分离的归一化因子
     # spectral_basis 为 (N, n_freq)，omega_means 为 (N,)
@@ -421,24 +472,41 @@ def compute_weak_operators(
         padded[:take] = d[:take]
         return np.tile(padded, (nrows, 1))            # (N, N)
 
-    # compute first-order weak operators and store basic L1 matrices
-    L1_basic = []
-    for j in range(n_controls):
-        raw1 = D_dag @ dD_dc[:, j, :]  # shape (P, P)
-        m = tile_diag(raw1, k_eff, n_samples)
-        L1_basic.append(m)
-        # weak: psi*m - psi_grad_j（分部积分修正，对每个频率分量减去标量梯度）
-        weak[f"L1_c{j+1}_weak"] = psi[:, None] * m - psi_grad[:, j, None] * np.ones((1, k_eff))
+    # compute first-order weak operators and store basic L1 matrices（含 c_j 缩放）
+    # 使用与 construct_inverse_library 相同的按元素投影公式：
+    #   alpha_j(n,k) = (dD_dc[n,j,:] @ D†[:,k]) / A[n,k]
+    # D_dag: (P,N), spectral_basis = D_dag.T: (N,P)
+    # A = D̂ @ D†: (N,N)
+    A_hat = d_hat @ D_dag                            # (N, N) hat matrix
+    spectral_basis_w = D_dag.T                        # (N, P)
 
-    # compute second-order and cross operators
+    weights_w = np.abs(A_hat)
+    mask_w    = weights_w > 1e-9 * np.max(weights_w)
+
+    alpha_basic = []
+    L1_basic    = []
+    for j in range(n_controls):
+        dA_j = dD_dc[:, j, :] @ spectral_basis_w.conj().T     # (N, N)
+        alpha_j = np.zeros_like(dA_j)
+        alpha_j[mask_w] = dA_j[mask_w] / A_hat[mask_w]        # element-wise log deriv
+        alpha_basic.append(alpha_j)
+        L_j = c[:, j, np.newaxis] * alpha_j                    # c_j * alpha_j（含缩放）
+        L1_basic.append(L_j)
+        # weak: psi * L_j - psi_grad_j（分部积分修正）
+        weak[f"L1_c{j+1}_weak"] = psi[:, None] * L_j - psi_grad[:, j, None] * np.ones((1, k_eff))
+
+    # 二阶 Euler 算子（1.md 公式，含 c 缩放）
     for i in range(n_controls):
         for j in range(n_controls):
-            raw2 = D_dag @ d2D_dc2[:, i, j, :]  # shape (P, P)
-            m2 = tile_diag(raw2, k_eff, n_samples)
-            cross_term = L1_basic[i] * L1_basic[j]
+            d2A_ij = d2D_dc2[:, i, j, :] @ spectral_basis_w.conj().T  # (N, N)
+            beta_ij_full = np.zeros_like(d2A_ij)
+            beta_ij_full[mask_w] = d2A_ij[mask_w] / A_hat[mask_w]
+            beta_ij = beta_ij_full - alpha_basic[i] * alpha_basic[j]   # (N, N)
             if i == j:
-                cross_term = cross_term - L1_basic[i]
-            weak[f"L2_c{i+1}c{j+1}_weak"] = psi[:, None] * m2 - psi[:, None] * cross_term
+                Xi2_ij = c[:, i, np.newaxis] ** 2 * beta_ij + L1_basic[i]
+            else:
+                Xi2_ij = c[:, i, np.newaxis] * c[:, j, np.newaxis] * beta_ij
+            weak[f"L2_c{i+1}c{j+1}_weak"] = psi[:, None] * Xi2_ij
 
     # include original library entries weighted as a fallback
     for name, mat in lib.items():

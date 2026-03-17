@@ -67,18 +67,21 @@ class DiscoveryConfig:
 
     管线模式开关
     ------------
+    多个标志同时为 True 时，优先级为：
+    ``use_weak_form > use_direct_euler > use_inverse_operator > 默认 SVD 路径``。
+
     use_inverse_operator : bool
-        True → 使用伪逆算子管线（``operator.construct_inverse_library``）。
+        True → 使用伪逆算子管线（``operator.construct_inverse_library``，K = N）。
         False（默认） → 使用 SVD 谱基投影管线（``pipeline_utils.construct_pure_library``）。
     use_weak_form : bool
-        True → 使用真正弱形式（IBP，``operator.build_weak_form_library``），
-        无需对含噪数据求导，优先级高于 use_inverse_operator。
+        True → 使用真正弱形式（IBP，``operator.build_weak_form_library``，K = N），
+        无需对含噪数据求导，优先级最高。
     weak_form_test_degree : int
         弱形式多项式测试函数的最高阶数，默认 2。
     use_direct_euler : bool
         True → 使用无 SVD 的直接 Euler 算子路径（``pipeline_utils.build_direct_euler_library``）。
         算子直接在全频域张量 D̂(c, ω) 上计算（含 c_i 缩放），用 W(ω)=[1,−iω] 线性拟合
-        分离 f/g，输出 K=1 全局方程，不进行组分分离。优先级仅低于 use_weak_form。
+        分离 f/g，输出 K=1 全局方程，不进行组分分离。
     """
     # ---------- 组分数选择 ----------
     k_mode: str = "fixed"

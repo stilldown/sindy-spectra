@@ -287,3 +287,128 @@ class TestDirectEulerPipeline:
         out = run_discovery(s, c, wl, cfg)
         # direct_euler 路径 K=1
         assert out.Xi.shape[2] == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. 伪逆路径（construct_inverse_library）c 缩放测试
+# ---------------------------------------------------------------------------
+
+class TestInverseLibraryCScaling:
+    """验证 construct_inverse_library 现在使用与 SVD 路径相同的按元素投影公式。
+
+    关键修正：旧版用 diag(D† @ dD/dc_j)（全局频域求和），
+    新版用 dD_dc[n,j,:] @ D†[:,k] / A[n,k]（每样本独立对数导数）。
+    """
+
+    def test_l1_zero_at_anchor(self):
+        """零锚点（c1=0）处 L1 = 0（对角元素 [n,n]）。"""
+        from opera.discovery.operator import construct_inverse_library
+        c, d_hat, omega, dD_dc, d2D_dc2, c1_vals, alpha = _beer_lambert_data_1d()
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, _, _, _ = construct_inverse_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
+        anchor = np.where(c1_vals == 0.0)[0]
+        for n in anchor:
+            assert abs(lib["L1_c1_f"][n, n]) < 1e-10, (
+                f"L1 at anchor n={n} should be 0, got {lib['L1_c1_f'][n, n]}"
+            )
+
+    def test_l1_proportional_to_c1(self):
+        """L1[n,n] / c1[n] 应为常数（Euler 算子核心特性）。"""
+        from opera.discovery.operator import construct_inverse_library
+        c, d_hat, omega, dD_dc, d2D_dc2, c1_vals, alpha = _beer_lambert_data_1d()
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, _, _, _ = construct_inverse_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
+        non_anchor = c1_vals > 0
+        diag_l1 = np.array([lib["L1_c1_f"][i, i] for i in range(len(c1_vals))])
+        ratios = diag_l1[non_anchor] / c1_vals[non_anchor]
+        # All ratios should be equal (constant α independent of c1)
+        assert np.ptp(ratios) < 1e-4 * abs(np.mean(ratios)), (
+            f"L1/c1 should be constant, got {ratios}"
+        )
+
+    def test_xi2_zero_at_anchor(self):
+        """零锚点处 Xi2 对角项为零。"""
+        from opera.discovery.operator import construct_inverse_library
+        c, d_hat, omega, dD_dc, d2D_dc2, c1_vals, alpha = _beer_lambert_data_1d()
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, _, _, _ = construct_inverse_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
+        anchor = np.where(c1_vals == 0.0)[0]
+        for n in anchor:
+            assert abs(lib["Xi2_c1c1_f"][n, n]) < 1e-10
+
+    def test_xi2_formula_consistency(self):
+        """Xi2[n,n] = c_n² * beta[n,n] + L1[n,n]（公式结构验证，非绝对值验证）。
+
+        伪逆路径用全 N 组分（帽矩阵），样本间存在耦合，beta 一般不为零。
+        因此 Xi2 ≠ L1（与 SVD 单组分路径不同）。
+        本测试只验证 Xi2 和 L1 在零锚点处都为零，且结构一致（有限、实数）。
+        """
+        from opera.discovery.operator import construct_inverse_library
+        c, d_hat, omega, dD_dc, d2D_dc2, c1_vals, _ = _beer_lambert_data_1d()
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, _, _, _ = construct_inverse_library(d_hat, dD_dc, d2D_dc2, omega, c, cfg)
+        # 所有输出应为有限值
+        assert np.all(np.isfinite(lib["Xi2_c1c1_f"]))
+        assert np.all(np.isfinite(lib["L1_c1_f"]))
+        # 零锚点处两者均为零
+        anchor = np.where(c1_vals == 0.0)[0]
+        for n in anchor:
+            assert abs(lib["Xi2_c1c1_f"][n, n]) < 1e-10
+            assert abs(lib["L1_c1_f"][n, n]) < 1e-10
+
+    def test_not_using_global_diagonal_formula(self):
+        """验证伪逆路径不再使用 diag(D† dD/dc_j) 的全局求和公式。
+
+        对于不均匀 c 网格，旧版全局对角公式给出的是跨样本平均，
+        新版按元素公式在零锚点处严格为零（物理上正确）。
+        """
+        from opera.discovery.operator import construct_inverse_library
+        rng = np.random.default_rng(7)
+        N, P = 6, 8
+        c_uneven = np.array([[0.0], [0.3], [0.7], [1.0], [1.5], [2.0]])  # not uniform
+        d_hat = np.abs(rng.standard_normal((N, P))) + 0.5
+        dD_dc_rand = rng.standard_normal((N, 1, P))
+        d2D_dc2_rand = rng.standard_normal((N, 1, 1, P))
+        omega = np.linspace(0, 1, P)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, _, _, _ = construct_inverse_library(
+            d_hat, dD_dc_rand, d2D_dc2_rand, omega, c_uneven, cfg
+        )
+        # 零锚点处 L1 必须为零（c_i=0 → L_i = 0）
+        assert abs(lib["L1_c1_f"][0, 0]) < 1e-12, (
+            "L1 should be zero at the zero anchor row (c1=0)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. compute_weak_operators c 缩放测试
+# ---------------------------------------------------------------------------
+
+class TestWeakOperatorsCScaling:
+    """验证 compute_weak_operators 使用正确的按元素投影公式（含 c_j 缩放）。"""
+
+    def test_l1_zero_at_anchor(self):
+        """零锚点处 L1_weak = 0（psi=1，c1=0）。"""
+        from opera.discovery.operator import compute_weak_operators
+        c, d_hat, omega, dD_dc, d2D_dc2, c1_vals, _ = _beer_lambert_data_1d()
+        psi = np.ones(len(c1_vals))
+        weak = compute_weak_operators(d_hat, dD_dc, d2D_dc2, c, psi)
+        anchor = np.where(c1_vals == 0.0)[0]
+        for n in anchor:
+            # 实部 (real component at diagonal) should be 0
+            assert abs(np.real(weak["L1_c1_weak"][n, n])) < 1e-10, (
+                f"Weak L1 at anchor n={n} should be ~0"
+            )
+
+    def test_l1_proportional_to_c1(self):
+        """L1_weak[n,n].real / c1[n] 应为常数（psi=1）。"""
+        from opera.discovery.operator import compute_weak_operators
+        c, d_hat, omega, dD_dc, d2D_dc2, c1_vals, _ = _beer_lambert_data_1d()
+        psi = np.ones(len(c1_vals))
+        weak = compute_weak_operators(d_hat, dD_dc, d2D_dc2, c, psi)
+        non_anchor = c1_vals > 0
+        diag_l1 = np.array([np.real(weak["L1_c1_weak"][i, i]) for i in range(len(c1_vals))])
+        ratios = diag_l1[non_anchor] / c1_vals[non_anchor]
+        assert np.ptp(ratios) < 1e-4 * abs(np.mean(ratios)), (
+            f"L1_weak/c1 should be constant, got {ratios}"
+        )

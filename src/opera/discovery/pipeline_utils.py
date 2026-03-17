@@ -19,20 +19,35 @@
 
 其中 ω_k 是谱基 v_k 的有效频率（谱能量加权均值）。
 
-**一阶 Euler 算子**（对数域 Euler-Lagrange 偏导）::
+**中间量定义**（无 c 缩放）::
 
-    L_i(c) = c_i · ∂_{c_i} ln A_k(c)   ∈ ℂ
+    α_i(c)   := ∂_{c_i} ln A_k(c)               （一阶对数导数）
+    β_{ij}(c) := ∂²_{c_i c_j} ln A_k(c)          （二阶对数导数）
+                = ∂²_{c_i c_j} ln A_k  -  α_i · α_j
+
+**一阶 Euler 算子**（含 c_i 缩放）::
+
+    L_i(c) = c_i · α_i(c)   ∈ ℂ
 
 分解为 f/g 两个实值分量::
 
     L_i^f := Re(L_i)              = c_i · ∂_{c_i} f_k
     L_i^g := -Im(L_i) / ω_k       = c_i · ∂_{c_i} g_k
 
-**二阶 Euler 算子**（修正 Itô 交叉项）::
+**二阶 Euler 算子**（对角与非对角形式不同）::
 
-    Ξ_{ij}(c) = c_i c_j ∂²_{c_i c_j} ln A_k  -  L_i(c)·L_j(c)   ∈ ℂ
+    其中 β_{ij}(c) = ∂²_{c_i c_j} ln A_k(c) - α_i(c) · α_j(c)（二阶对数导数）
 
-同样分解为 f/g 两个实值分量。
+    对角（i = j）：
+        Ξ_{ii}(c) = c_i² β_{ii}(c) + L_i(c)   ∈ ℂ
+                  = c_i² ∂²_{c_i} ln A_k  -  (L_i(c)² - L_i(c))
+        来源于 1.md：Ξ_{c²} = D^{-1}(c² ∂²_c D) - (L_c² - L_c)
+
+    非对角（i ≠ j）：
+        Ξ_{ij}(c) = c_i c_j β_{ij}(c)   ∈ ℂ
+                  = c_i c_j ∂²_{c_i c_j} ln A_k  -  L_i(c) · L_j(c)
+
+同样各分解为 f/g 两个实值分量。
 
 SINDy-PI 隐式方程识别
 -----------------------
@@ -99,10 +114,13 @@ def construct_pure_library(
 
         ω_k = Re(diag(Phi diag(ω) Phi†))   （谱能量加权均值频率）
 
-    **步骤 4：Euler 算子**
+    **步骤 4：Euler 算子（含 c 缩放，分三步）**
 
-        L_i = (∂D̂/∂c_i @ Phi†) ⊘ A   （按元素复数除法，大振幅处才可靠）
-        Ξ_{ij} = (∂²D̂/(∂c_i∂c_j) @ Phi†) ⊘ A  -  L_i · L_j
+        α_i := (∂D̂/∂c_i @ Phi†) ⊘ A           （一阶对数导数，无 c 缩放）
+        β_{ij} := (∂²D̂/(∂c_i∂c_j) @ Phi†) ⊘ A  -  α_i · α_j   （二阶对数导数）
+        L_i   = c_i · α_i                        （一阶 Euler 算子，含 c_i 缩放）
+        Ξ_{ii}  = c_i² β_{ii} + L_i              （对角 Euler 算子）
+        Ξ_{ij}  = c_i c_j β_{ij}  (i ≠ j)       （非对角 Euler 算子）
 
     **步骤 5：f/g 分离**
 
@@ -120,7 +138,6 @@ def construct_pure_library(
         也不属于 g 子空间，会导致 J_f + J_g < J（库内出现"孤立项"），
         进而使 ``pipeline.py`` 中按键名查找填入 Xi 的循环漏填该位置，
         令 Xi 部分列永远为零，破坏系数张量完整性。
-
     Parameters
     ----------
     d_hat   : (N, P)
@@ -141,6 +158,11 @@ def construct_pure_library(
     n_controls = c.shape[1]
 
     # ── 步骤 1/2/3：SVD → 谱基 P → 投影系数 A → 有效频率 ω_k ──────────────
+    # K 选择规则（由 config.k_mode 控制）：
+    #   "fixed"       → K = k_value，忽略奇异值能量（最常用）
+    #   "auto"        → K = 满足累积能量 ≥ rank_energy_threshold 的最小阶数，上限 k_max
+    #   "capped-auto" → 同 auto
+    # 截断位置在 SVD 后，取 Vt[:K, :]（前 K 个右奇异向量作为谱基）。
     U, s, Vt = svd(d_hat, full_matrices=False)
 
     k_max = int(config.k_max)
@@ -220,7 +242,7 @@ def construct_pure_library(
     library["g"]      = g              # g 子空间
     library["ln_f^2"] = ln_f ** 2     # f 子空间
     library["g^2"]    = g ** 2        # g 子空间
-    # ⚠ 不加 ln_f*g 交叉项：若加入，该项不属于 f 也不属于 g 子空间，
+    # WARNING: 不加 ln_f*g 交叉项：若加入，该项不属于 f 也不属于 g 子空间，
     #   导致 J_f + J_g < J，pipeline.py 中按 key 查找填入 Xi 的循环会
     #   漏填该项对应位置，使 Xi 部分列永远为零。保持严格二分以确保 J_f + J_g == J。
 
