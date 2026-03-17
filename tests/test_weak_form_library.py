@@ -135,7 +135,7 @@ class TestBuildWeakFormLibraryShapes:
         assert basis.shape == (N, n_freq)
         assert A.shape == (N, N)
         for key, val in lib.items():
-            assert val.shape == (M, N), f"{key}: expected ({M},{N}), got {val.shape}"
+            assert val.shape == (N, M), f"{key}: expected ({N},{M}), got {val.shape}"
 
     def test_output_shapes_two_controls(self):
         rng = np.random.default_rng(11)
@@ -145,10 +145,10 @@ class TestBuildWeakFormLibraryShapes:
         omega = np.linspace(0, 1, n_freq)
         # k_eff 参数已弃用：D̂ @ D† 是 N×N 方阵
         lib, names, Psi, basis, A = build_weak_form_library(d_hat, c, omega, k_eff=8)
-        # M = 1 + 2 + 2 + 1 = 6
+        # M = 1 + 2 + 2 + 1 = 6 test functions; shape is now (K, M) = (N, 6)
         assert Psi.shape[0] == 6
         for val in lib.values():
-            assert val.shape[0] == 6
+            assert val.shape[1] == 6   # M = 6 test-funcs is now axis-1 (freq_points dim)
         # A 是 N×N 方阵（帽矩阵）
         assert A.shape == (N, N)
 
@@ -171,9 +171,9 @@ class TestBuildWeakFormLibraryShapes:
         omega = np.linspace(0, 1, n_freq)
         # k_eff 参数传入任何值均被忽略；D̂ @ D† 始终是 N×N 方阵
         lib, _, _, basis, A = build_weak_form_library(d_hat, c, omega, k_eff=100)
-        # 组分数 = N = 8，非 min(N, n_freq) = 5
+        # 组分数 = N = 8（axis-0），非 min(N, n_freq) = 5
         for val in lib.values():
-            assert val.shape[1] == N, f"expected K=N={N}, got {val.shape[1]}"
+            assert val.shape[0] == N, f"expected K=N={N}, got {val.shape[0]}"
         assert basis.shape == (N, n_freq)
         assert A.shape == (N, N)
 
@@ -229,11 +229,12 @@ class TestWeakFormIBPCorrectness:
             c, degree=2
         )
         ibp_kernel = dPsi_arr[0] * c_vals[None, :] + Psi_arr   # (M, N)
-        expected_f = np.real(-(ibp_kernel @ ln_A))              # (M, K)
+        # 期望值：IBP 公式 -(ibp_kernel @ ln_A)，形状 (M, K)，转置为 (K, M)
+        expected_f = np.real(-(ibp_kernel @ ln_A)).T              # (K, M)
 
         np.testing.assert_allclose(
             lib["wL_1_f"], expected_f, atol=1e-10,
-            err_msg="wL_1_f does not match IBP formula -(ibp_kernel @ ln_A)"
+            err_msg="wL_1_f does not match IBP formula -(ibp_kernel @ ln_A).T"
         )
 
     def test_zero_operator_for_constant_D(self):
@@ -273,10 +274,11 @@ class TestWeakFormIBPCorrectness:
         Psi_arr, dPsi_arr, _ = _build_polynomial_test_functions_with_grads(c, degree=2)
 
         # For ψ_0 = 1: IBP kernel = ∂_{c_1}[1·c_1] = 1  (constant 1 for all n)
+        # lib["wL_1_f"] shape is now (K, M): lib["wL_1_f"][:, m] gives all K values for ψ_m
         ibp_psi0 = np.ones(N)
         expected_0 = np.real(-(ibp_psi0 @ ln_A))         # (K,)
         np.testing.assert_allclose(
-            lib["wL_1_f"][0, :], expected_0, atol=1e-10
+            lib["wL_1_f"][:, 0], expected_0, atol=1e-10
         )
 
         # For ψ_1 = c_1: IBP kernel = ∂_{c_1}[c_1·c_1] = 2·c_1
@@ -284,7 +286,7 @@ class TestWeakFormIBPCorrectness:
         expected_1 = np.real(-(ibp_psi1 @ ln_A))         # (K,)
         idx_c1 = names.index("c_1")
         np.testing.assert_allclose(
-            lib["wL_1_f"][idx_c1, :], expected_1, atol=1e-10
+            lib["wL_1_f"][:, idx_c1], expected_1, atol=1e-10
         )
 
 

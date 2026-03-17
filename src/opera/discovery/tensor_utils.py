@@ -433,9 +433,10 @@ def build_tensor_euler_library(
             library_tensor[f"L2_c{i+1}c{j+1}_f"] = np.real(val)
             library_tensor[f"L2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means + 1e-9)
 
-    # ── 步骤 8：展平 → (N, K) 供 solve_nullspace 使用 ──────────────────────
+    # ── 步骤 8：展平并转置 → (K, N) 算子种类×频点约定 ────────────────────────
+    # tensor_to_flat 产生 (N, K)；转置后为 (K, N) = 频点（谱组分）× 样本点（评估维）
     library: dict[str, np.ndarray] = {
-        key: tensor_to_flat(val, n_leading=d)
+        key: tensor_to_flat(val, n_leading=d).T
         for key, val in library_tensor.items()
     }
     A_flat = A_tensor.reshape(N, K)
@@ -511,7 +512,7 @@ def run_tensor_discovery(
 
     # ── 构建张量 Euler 算子库 ───────────────────────────────────────────────
     (
-        library,          # dict[str, (N, K)]
+        library,          # dict[str, (K, N)] — 算子种类×频点（K 谱组分, N 样本点）
         library_tensor,   # dict[str, (*grid, K)]
         spectral_basis,   # (K, P)
         A_flat,           # (N, K)
@@ -749,8 +750,8 @@ def build_fiber_euler_library(
             f"L2_c{j+1}c{j+1}_f", f"L2_c{j+1}c{j+1}_g",
         ]
 
-    # 初始化全零展平库
-    library: dict[str, np.ndarray] = {k: np.zeros((N_total, K)) for k in all_keys}
+    # 初始化全零展平库（(N_total, K) 临时格式，最后转置为 (K, N_total)）
+    library_tmp: dict[str, np.ndarray] = {k: np.zeros((N_total, K)) for k in all_keys}
 
     for j in range(d):
         D_j = D_hats[j]                                  # (n_j, P)
@@ -784,7 +785,7 @@ def build_fiber_euler_library(
         ln_f_j = np.real(np.log(A_j + _EPSILON_LOG))          # (n_j, K)
         g_j    = -np.imag(np.log(A_j + _EPSILON_LOG)) / (omega_means + 1e-9)
 
-        # 构建纤维库（仅含本维度的对角算子）
+        # 构建纤维库（仅含本维度的对角算子，(n_j, K) 格式）
         fiber_lib: dict[str, np.ndarray] = {
             "ln_f":                       ln_f_j,
             "g":                          g_j,
@@ -797,10 +798,13 @@ def build_fiber_euler_library(
         }
         fiber_libraries.append(fiber_lib)
 
-        # 填入展平库
+        # 填入展平库（临时 (N_total, K) 格式）
         for key, val in fiber_lib.items():
-            library[key][row_offset: row_offset + n_j] = val
+            library_tmp[key][row_offset: row_offset + n_j] = val
         row_offset += n_j
+
+    # 转置为 (K, N_total) = 算子种类×频点约定
+    library: dict[str, np.ndarray] = {k: v.T for k, v in library_tmp.items()}
 
     return library, fiber_libraries, spectral_basis, A_combined, omega_means
 

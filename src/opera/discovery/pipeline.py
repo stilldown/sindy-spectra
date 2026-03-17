@@ -135,7 +135,7 @@ def run_discovery(
     elif cfg.use_direct_euler:
         # 1.md 直接 Euler 算子路径：无 SVD，逐元素在全频域 D̂(c,ω) 上计算 Euler 算子，
         # 用 W(ω)=[1,−iω] 线性拟合分离 f/g，输出 K=1 全局物理方程。
-        # 原始库条目形状：(N, 1)；以下投影为 (M, 1) 与弱形式对齐。
+        # 原始库条目形状：(N, 1)；以下投影并转置为 (K, M) = (1, M) = 算子种类×频点。
         lib, basis, A, _w_means = build_direct_euler_library(
             d_hat=d_hat,
             dD_dc=dD_dc,
@@ -143,16 +143,16 @@ def run_discovery(
             omega=omega,
             c=c,
         )
-        # 以弱形式算子库为准：通过多项式测试函数 Ψ 将库条目从 (N, K) 投影至 (M, K)
+        # 算子种类×频点：Ψ 投影 (N,1)→(M,1)，再转置 → (1, M) = (K, M)
         from .operator import _build_polynomial_test_functions_with_grads
         _Psi, _, _ = _build_polynomial_test_functions_with_grads(
             c, degree=cfg.weak_form_test_degree
         )
-        lib = {k: _Psi @ v for k, v in lib.items()}
+        lib = {k: (_Psi @ v).T for k, v in lib.items()}
 
     elif cfg.use_inverse_operator:
         # 伪逆路径：D†∂D 对角线截断，不做谱基投影
-        # 库条目包含复数弱算子，保持 (N, K) 强形式，暂不做 Ψ 投影。
+        # 库条目形状 (N, K)；转置为 (K, N) = 算子种类×频点（N 样本作为"频点"维）。
         lib, basis, A, _w_means = construct_inverse_library(
             d_hat=d_hat,
             dD_dc=dD_dc,
@@ -161,18 +161,19 @@ def run_discovery(
             c=c,
             config=cfg,
         )
-        # 附加近似弱算子（psi=1 的均匀权重版本）
+        lib = {k: v.T for k, v in lib.items()}
+        # 附加近似弱算子（psi=1 的均匀权重版本，转置对齐）
         try:
             from .operator import compute_weak_operators
             psi = np.ones(n_samples)
             weak_lib = compute_weak_operators(d_hat, dD_dc, d2D_dc2, c, psi)
-            lib.update(weak_lib)
+            lib.update({k: v.T for k, v in weak_lib.items()})
         except ImportError:
             pass
 
     else:
         # 默认路径（推荐）：SVD 谱基 → 按元素复对数 → Euler 算子（含 c_i 缩放）
-        # 原始库条目形状：(N, K)；以下投影为 (M, K) 与弱形式对齐。
+        # 原始库条目形状：(N, K)；以下投影并转置为 (K, M) = 算子种类×频点。
         lib, basis, A, _w_means = construct_pure_library(
             d_hat=d_hat,
             dD_dc=dD_dc,
@@ -181,12 +182,12 @@ def run_discovery(
             c=c,
             config=cfg,
         )
-        # 以弱形式算子库为准：通过多项式测试函数 Ψ 将库条目从 (N, K) 投影至 (M, K)
+        # 算子种类×频点：Ψ 投影 (N,K)→(M,K)，再转置 → (K, M)
         from .operator import _build_polynomial_test_functions_with_grads
         _Psi, _, _ = _build_polynomial_test_functions_with_grads(
             c, degree=cfg.weak_form_test_degree
         )
-        lib = {k: _Psi @ v for k, v in lib.items()}
+        lib = {k: (_Psi @ v).T for k, v in lib.items()}
     t_lib = perf_counter()
 
     # ── 阶段 4：SINDy-PI 零空间识别 ─────────────────────────────────────────

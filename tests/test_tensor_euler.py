@@ -242,24 +242,25 @@ class TestTensorEulerLibraryConsistency:
         return lib_t, lib_f, basis_t, basis_f, A_t, A_f
 
     def test_l1_f_matches_1d(self):
-        """1D：L1_c1_f（一阶 Euler 算子 f 分量）与展平路径一致。"""
+        """1D：L1_c1_f（一阶 Euler 算子 f 分量）与展平路径一致（(K,N) 结构）。"""
         lib_t, lib_f, _, _, _, _ = self._compare_1d(alpha=2.0, n_c=6, n_wl=32, k_value=1)
-        np.testing.assert_allclose(lib_t["L1_c1_f"], lib_f["L1_c1_f"], atol=1e-8)
+        # lib_t: (K, N)；lib_f: (N, K)（construct_pure_library 原始输出）→ 转置比较
+        np.testing.assert_allclose(lib_t["L1_c1_f"], lib_f["L1_c1_f"].T, atol=1e-8)
 
     def test_l1_g_matches_1d(self):
-        """1D：L1_c1_g（一阶 Euler 算子 g 分量）与展平路径一致。"""
+        """1D：L1_c1_g（一阶 Euler 算子 g 分量）与展平路径一致（(K,N) 结构）。"""
         lib_t, lib_f, _, _, _, _ = self._compare_1d(alpha=2.0, n_c=6, n_wl=32, k_value=1)
-        np.testing.assert_allclose(lib_t["L1_c1_g"], lib_f["L1_c1_g"], atol=1e-8)
+        np.testing.assert_allclose(lib_t["L1_c1_g"], lib_f["L1_c1_g"].T, atol=1e-8)
 
     def test_xi2_matches_1d(self):
-        """1D：L2_c1c1_f 与展平路径一致。"""
+        """1D：L2_c1c1_f 与展平路径一致（(K,N) 结构）。"""
         lib_t, lib_f, _, _, _, _ = self._compare_1d(alpha=2.0, n_c=6, n_wl=32, k_value=1)
-        np.testing.assert_allclose(lib_t["L2_c1c1_f"], lib_f["L2_c1c1_f"], atol=1e-8)
+        np.testing.assert_allclose(lib_t["L2_c1c1_f"], lib_f["L2_c1c1_f"].T, atol=1e-8)
 
     def test_ln_f_matches_1d(self):
-        """1D：ln_f（零阶项）与展平路径一致。"""
+        """1D：ln_f（零阶项）与展平路径一致（(K,N) 结构）。"""
         lib_t, lib_f, _, _, _, _ = self._compare_1d(alpha=2.0, n_c=6, n_wl=32, k_value=1)
-        np.testing.assert_allclose(lib_t["ln_f"], lib_f["ln_f"], atol=1e-8)
+        np.testing.assert_allclose(lib_t["ln_f"], lib_f["ln_f"].T, atol=1e-8)
 
     def test_all_keys_present(self):
         """库中应包含所有 f/g 分量键名（1D case）。"""
@@ -286,7 +287,7 @@ class TestTensorEulerLibraryConsistency:
                 assert f"L2_c{i}c{j}_f" in lib_t
 
     def test_2d_l1_matches_flat(self):
-        """2D：L1_c1_f 和 L1_c2_f 与展平路径一致。"""
+        """2D：L1_c1_f 和 L1_c2_f 与展平路径一致（(K,N) 结构）。"""
         st, c_axes, wl, _, _ = _beer_lambert_2d(n_c1=4, n_c2=3)
         sf, cf = _flat_from_tensor_2d(st, c_axes)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
@@ -297,8 +298,9 @@ class TestTensorEulerLibraryConsistency:
         dD_flat, d2D_flat = build_control_derivative_bundle(D_flat, cf)
         lib_f, *_ = construct_pure_library(D_flat, dD_flat, d2D_flat, omega, cf, cfg)
 
-        np.testing.assert_allclose(lib_t["L1_c1_f"], lib_f["L1_c1_f"], atol=1e-8)
-        np.testing.assert_allclose(lib_t["L1_c2_f"], lib_f["L1_c2_f"], atol=1e-8)
+        # lib_t: (K, N)；lib_f: (N, K) → 转置后比较
+        np.testing.assert_allclose(lib_t["L1_c1_f"], lib_f["L1_c1_f"].T, atol=1e-8)
+        np.testing.assert_allclose(lib_t["L1_c2_f"], lib_f["L1_c2_f"].T, atol=1e-8)
 
     def test_tensor_library_shape(self):
         """library_tensor 的每个条目形状应为 (*grid_shape, K)。"""
@@ -313,12 +315,13 @@ class TestTensorEulerLibraryConsistency:
         """张量路径：零锚点处 L1=0，L1/c1 对内部点为常数（c 缩放正确）。
 
         边界点因 np.gradient 使用一阶单侧差分精度较低，此处仅检测内部点。
+        库条目形状为 (K, N)；K=1 时取 lib[key][0, :] 获取所有 N 个样本值。
         """
         st, c_axes, wl, alpha = _beer_lambert_1d(n_c=7)   # 使用更多点确保有足够内部点
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib_t, lib_tensor, *_ = build_tensor_euler_library(st, c_axes, wl, cfg)
 
-        L1 = lib_t["L1_c1_f"][:, 0]   # (N,) 第一个组分
+        L1 = lib_t["L1_c1_f"][0, :]   # (N,) 第一个（唯一）组分的全部样本值
         c1 = c_axes[0]
         # 零锚点处 L1 = 0
         assert abs(L1[0]) < 1e-10, f"零锚点处 L1 应为 0，实为 {L1[0]}"
@@ -493,7 +496,7 @@ class TestBuildFiberEulerLibrary:
         assert "ln_f" in lib
         assert "L1_c1_f" in lib
         assert "L2_c1c1_f" in lib
-        assert lib["L1_c1_f"].shape == (5, 1)
+        assert lib["L1_c1_f"].shape == (1, 5)   # (K, N_total) = (1, 5)
 
     def test_output_structure_3d(self):
         """3 条纤维：库应包含 c1/c2/c3 的对角算子，无非对角项。"""
@@ -511,12 +514,12 @@ class TestBuildFiberEulerLibrary:
         assert "L2_c1c3_f" not in lib
 
     def test_n_total_matches_sum(self):
-        """展平库行数应等于 Σn_j。"""
+        """展平库列数应等于 Σn_j（(K, N_total) 结构，列 = 样本）。"""
         fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5, 2.0], n_per_fiber=6)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, A, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
         N_total = sum(len(ax) for ax in c_axes)
-        assert lib["ln_f"].shape[0] == N_total
+        assert lib["ln_f"].shape[1] == N_total   # axis-1 = 样本维
         assert A.shape[0] == N_total
 
     def test_fiber_library_shape(self):
@@ -531,23 +534,26 @@ class TestBuildFiberEulerLibrary:
                 assert val.shape == (n_j, 2), f"flibs[{j}][{key}] 形状应为 ({n_j},2)"
 
     def test_off_axis_operators_are_zero(self):
-        """纤维 j 对应的行，其他维度 k≠j 的算子应精确为零。"""
+        """纤维 j 对应的列，其他维度 k≠j 的算子应精确为零。
+        
+        库条目形状 (K, N_total)；纤维 0 占列 0..n0-1，纤维 1 占列 n0..n0+n1-1。
+        """
         fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0], n_per_fiber=5)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, _, _, _, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
         n0 = len(c_axes[0])
         n1 = len(c_axes[1])
-        # 纤维 0 的行（索引 0..n0-1）：c2 的算子为零
+        # 纤维 0 的列（索引 0..n0-1）：c2 的算子为零
         np.testing.assert_array_equal(
-            lib["L1_c2_f"][:n0],
-            np.zeros((n0, 1)),
-            err_msg="纤维 0 的行中 L1_c2_f 应为零"
+            lib["L1_c2_f"][:, :n0],
+            np.zeros((1, n0)),
+            err_msg="纤维 0 的列中 L1_c2_f 应为零"
         )
-        # 纤维 1 的行（索引 n0..n0+n1-1）：c1 的算子为零
+        # 纤维 1 的列（索引 n0..n0+n1-1）：c1 的算子为零
         np.testing.assert_array_equal(
-            lib["L1_c1_f"][n0:n0 + n1],
-            np.zeros((n1, 1)),
-            err_msg="纤维 1 的行中 L1_c1_f 应为零"
+            lib["L1_c1_f"][:, n0:n0 + n1],
+            np.zeros((1, n1)),
+            err_msg="纤维 1 的列中 L1_c1_f 应为零"
         )
 
     def test_1d_fiber_consistent_with_full_tensor(self):
@@ -575,15 +581,18 @@ class TestBuildFiberEulerLibrary:
         )
 
     def test_zero_anchor_at_c0(self):
-        """零参考点（c=0）处 L_j = 0（c 缩放正确）。"""
+        """零参考点（c=0）处 L_j = 0（c 缩放正确）。
+        
+        库条目形状为 (K, N_total)；K=1 时 [0, sample_idx] 访问样本。
+        """
         fibers, c_axes, wl = _beer_lambert_fibers([2.0, 1.5], n_per_fiber=5)
         cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
         lib, flibs, _, _, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
         n0 = len(c_axes[0])
-        # 纤维 0 的第一行（c1=0）：L1_c1_f 应为零
+        # 纤维 0 的第一个样本（c1=0）：L1_c1_f 应为零 → lib[key][spectral_comp, sample]
         assert abs(float(lib["L1_c1_f"][0, 0])) < 1e-10
-        # 纤维 1 的第一行（c2=0，在全局行号 n0 处）：L1_c2_f 应为零
-        assert abs(float(lib["L1_c2_f"][n0, 0])) < 1e-10
+        # 纤维 1 的第一个样本（c2=0，在全局列号 n0 处）：L1_c2_f 应为零
+        assert abs(float(lib["L1_c2_f"][0, n0])) < 1e-10
 
     def test_high_dimensional_fiber_linear_scaling(self):
         """高维（d=10）纤维采样：总样本数为 Σn_j（线性），而非 Πn_j（指数）。"""

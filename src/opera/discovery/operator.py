@@ -286,12 +286,15 @@ def build_weak_form_library(
     IBP 核 ``∂_{c_i}[ψ_m(c)·c_i]`` 对多项式测试函数 ψ_m 解析可得，
     完全绕开对含噪 D̂ 的数值微分。
 
-    库的形状约定
-    -----------
-    每个库条目形状为 ``(M, N)``，其中
+    库的形状约定（算子种类×频点）
+    ---------------------------
+    每个库条目形状为 ``(K, M)``，其中
 
-    * M = 测试函数数量
-    * N = 样本数（帽矩阵列数，即 D̂ @ D† 的列数）
+    * K = 谱组分数（频点，``axis-0``）= 帽矩阵列数 N
+    * M = 测试函数数量（``axis-1``）
+
+    这样 ``library[key][k, :]`` 给出算子在第 k 个谱组分处的 M 个测试函数内积值，
+    与 ``solve_nullspace`` 中 ``Θ_k ∈ R^{J×M}``（算子种类×频点）的第 j 行对应。
 
     Parameters
     ----------
@@ -311,11 +314,13 @@ def build_weak_form_library(
 
     Returns
     -------
-    library : dict[str, ndarray(M, N)]
+    library : dict[str, ndarray(K, M)]
         弱形式算子库，键名遵循 ``solve_nullspace`` 的 ``_f``/``_g`` 过滤约定：
 
         * ``"wln_f"``, ``"wln_g"``     — 零阶项（⟨ln A, ψ_m⟩ 的实/虚部）
         * ``"wL_{i}_f"``, ``"wL_{i}_g"`` — 第 i 个控制维的一阶弱 Euler 算子
+
+        每个条目 ``library[key]`` 的形状为 ``(K, M)`` = 谱组分（频点）×测试函数。
     names : list[str], length M
         测试函数名称列表。
     Psi : ndarray, shape (M, N)
@@ -366,28 +371,35 @@ def build_weak_form_library(
     library: Dict[str, np.ndarray] = {}
 
     # -------------------------------------------------------------------
-    # 零阶项: ⟨ln A_k, ψ_m⟩ = Psi @ ln_A  → (M, N)
-    # Re(·) = 对数幅度内积（f 分量），-Im(·)/ω_k = 相位内积（g 分量）
+    # 库条目形状约定（算子种类×频点）：
+    #   每个条目形状为 (K, M)，其中
+    #     K = 谱组分数（频点，axis-0 = 频点索引）
+    #     M = 测试函数数（算子内积数，axis-1 = 测试函数索引）
+    #
+    #   即 library[key][k, m] = 算子在第 k 个谱组分、第 m 个测试函数处的内积值。
+    #   这使得 per-component 切片 library[key][k, :] ∈ R^M 自然对应
+    #   solve_nullspace 中的 (J, M) = "算子种类×频点" 回归矩阵的第 k 列。
     # -------------------------------------------------------------------
-    w0 = Psi @ ln_A                                     # (M, N)
-    library["wln_f"] = np.real(w0)
-    library["wln_g"] = -np.imag(w0) / (omega_means[None, :] + 1e-9)
 
-    # -------------------------------------------------------------------
+    # 零阶项: ⟨ln A_k, ψ_m⟩ = Psi @ ln_A  → (M, N)，转置 → (N, M) = (K, M)
+    # Re(·) = 对数幅度内积（f 分量），-Im(·)/ω_k = 相位内积（g 分量）
+    w0 = Psi @ ln_A                                     # (M, N)
+    library["wln_f"] = np.real(w0).T                    # (N, M) = (K, M)
+    library["wln_g"] = (-np.imag(w0) / (omega_means[None, :] + 1e-9)).T  # (K, M)
+
     # 一阶弱 Euler 算子 (IBP, 无需 dD_dc):
     #
     #   ⟨c_i ∂_{c_i} ln A_k, ψ_m⟩
     #       = -Σ_n (∂_{c_i}ψ_m(c_n)·c_i(n) + ψ_m(c_n)) · ln A_k(c_n)
     #
     # 导数转移到光滑测试函数 ψ_m 上，完全避免对含噪数据 D̂ 求导。
-    # -------------------------------------------------------------------
     for i in range(n_controls):
         ci = c[:, i]                                    # (N,)
         # IBP 核: ∂_{c_i}[ψ_m(c) · c_i] = ∂_{c_i}ψ_m · c_i + ψ_m
         ibp_i = dPsi[i] * ci[None, :] + Psi            # (M, N)
         wLi = -(ibp_i @ ln_A)                          # (M, N)
-        library[f"wL_{i + 1}_f"] = np.real(wLi)
-        library[f"wL_{i + 1}_g"] = -np.imag(wLi) / (omega_means[None, :] + 1e-9)
+        library[f"wL_{i + 1}_f"] = np.real(wLi).T               # (K, M)
+        library[f"wL_{i + 1}_g"] = (-np.imag(wLi) / (omega_means[None, :] + 1e-9)).T  # (K, M)
 
     return library, names, Psi, spectral_basis, A
 

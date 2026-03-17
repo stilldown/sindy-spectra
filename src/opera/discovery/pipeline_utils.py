@@ -267,26 +267,24 @@ def solve_nullspace(
 ) -> list[dict[str, tuple[np.ndarray, list[str]]]]:
     """对每个谱分量独立求解 f/g 子空间中的 SINDy-PI 隐式约束。
 
-    数学原理
-    --------
-    对 f 子空间（含所有 f-分量条目），构建特征矩阵 X_f ∈ ℝ^{R×J_f}。
-    SVD 最小奇异值对应的右奇异向量 ξ_f 满足隐式方程::
+    数学原理（算子种类×频点）
+    -------------------------
+    ``library[key]`` 形状为 ``(K, M)``，其中：
 
-        X_f ξ_f ≈ 0
+    * **K** — 行数 = 谱组分数（``axis-0``，``shape[0]``，由 ``k_eff = shape[0]`` 确定）
+    * **M** — 列数 = 测试函数数量（``axis-1``，``shape[1]``，对应"频点"评估维度）
 
-    g 子空间同理。
+    对于每个谱分量 ``comp_idx``（频点 k），取所有算子的第 ``comp_idx`` 行组成
+    特征矩阵 ``Θ_k ∈ ℝ^{J×M}``（**算子种类×频点**）::
 
-    矩阵结构约定（以弱形式算子库为准）
-    ------------------------------------
-    ``library[key]`` 形状为 ``(R, K)``，其中：
+        Θ_k[j, :] = library[key_j][comp_idx, :]   ∈ ℝ^M
 
-    * **R** — 行数，语义取决于来源路径：
+    通过 SVD 求 Θ_k 的**左零空间**（left null space）：
 
-      - 弱形式路径（``use_weak_form=True``）：R = M（测试函数数量，内积行向量）
-      - SVD / 直接 Euler 路径（经 Ψ 投影后）：R = M（同上，与弱形式对齐）
-      - 伪逆路径（不做 Ψ 投影）：R = N（样本数，逐点行向量）
+        Θ_k = U Σ Vt,   ξ_k = U[:, -1]   （最小奇异值对应左奇异向量）
 
-    * **K** — 列数 = 谱组分数（由 ``shape[1]`` 确定）
+    这等价于在转置矩阵 ``Θ_k^T ∈ ℝ^{M×J}`` 上求右零空间，
+    在数学上与旧的 ``(M×J)`` 列优先公式给出完全相同的 ``ξ_k ∈ ℝ^J``。
 
     过滤规则
     --------
@@ -305,7 +303,7 @@ def solve_nullspace(
     lib_g = {k: v for k, v in library.items()
              if "_g" in k or k in ("g", "g^2")}
 
-    k_eff = list(library.values())[0].shape[1]   # 组分数 K
+    k_eff = list(library.values())[0].shape[0]   # 组分数 K（axis-0 = 频点维）
     component_models: list[dict] = []
 
     for comp_idx in range(k_eff):
@@ -315,21 +313,24 @@ def solve_nullspace(
                 continue
             keys = sorted(sub_lib.keys())
             J = len(keys)
-            N = sub_lib[keys[0]].shape[0]
+            M = sub_lib[keys[0]].shape[1]   # 测试函数数（频点评估维度）
 
-            # 特征矩阵 X ∈ ℝ^{R×J}（取第 comp_idx 列，R = 测试函数数或样本数）
-            X = np.zeros((N, J))
+            # 特征矩阵 Θ_k ∈ ℝ^{J×M}（算子种类×频点）：
+            # 取每个算子条目的第 comp_idx 行（该谱分量的全部 M 个测试函数值）
+            Theta = np.zeros((J, M))
             for i, k in enumerate(keys):
-                X[:, i] = sub_lib[k][:, comp_idx]
+                Theta[i, :] = sub_lib[k][comp_idx, :]
 
-            # 列归一化；剔除零列
-            norms = np.linalg.norm(X, axis=0)
+            # 行归一化（每行 = 一个算子，归一化后数值稳定）；剔除零行
+            norms = np.linalg.norm(Theta, axis=1)   # (J,)  per-operator norm
             valid = norms > 1e-9
-            X_norm = X[:, valid]
+            Theta_norm = Theta[valid] / norms[valid, np.newaxis]
 
-            if X_norm.shape[1] > 1:
-                _, _, Vt = svd(X_norm, full_matrices=False)
-                coefs_norm = Vt[-1, :]          # 最小奇异值方向
+            if Theta_norm.shape[0] > 1:
+                # SVD 求左零空间：Θ_k = U Σ Vt，最小奇异值对应最后一列 U[:, -1]
+                # （等价于旧方案中 Θ_k^T = X_k 的右零空间 Vt[-1]，结果相同）
+                U, _, _ = svd(Theta_norm, full_matrices=False)
+                coefs_norm = U[:, -1]               # 最小奇异值对应的左奇异向量
 
                 coefs = np.zeros(J, dtype=complex)
                 coefs[valid] = coefs_norm / norms[valid]   # 还原到未归一化坐标
