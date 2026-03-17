@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QSplitter, QGroupBox,
-    QLineEdit, QFormLayout, QTabWidget, QTextEdit, QLabel, QSpinBox, QComboBox, QCheckBox
+    QLineEdit, QFormLayout, QTabWidget, QTextEdit, QLabel, QSpinBox, QComboBox
 )
 from PySide6.QtCore import Qt
 import numpy as np
@@ -86,13 +86,6 @@ class MainWindow(QMainWindow):
 
         self.zero_anchor_tol = QLineEdit("1e-12")
         self.params_layout.addRow("零浓度容差:", self.zero_anchor_tol)
-
-        self.calibration_ridge = QLineEdit("1e-8")
-        self.params_layout.addRow("单次校准 Ridge:", self.calibration_ridge)
-
-        self.calibrate_once = QCheckBox("启用单次纯谱校准")
-        self.calibrate_once.setChecked(True)
-        self.params_layout.addRow("纯谱校准:", self.calibrate_once)
 
         self.epsilon = QLineEdit("1e-9")
         self.params_layout.addRow("数值容差 ε:", self.epsilon)
@@ -201,10 +194,6 @@ class MainWindow(QMainWindow):
             anchor_tol = float(self.zero_anchor_tol.text())
         except ValueError:
             anchor_tol = 1e-12
-        try:
-            ridge = float(self.calibration_ridge.text())
-        except ValueError:
-            ridge = 1e-8
 
         cfg = self.backend.make_config(
             k_mode=self.k_mode.currentText(),
@@ -213,8 +202,6 @@ class MainWindow(QMainWindow):
             rank_energy_threshold=float(rank_thr),
             sparsity_threshold=float(th),
             zero_anchor_tol=float(anchor_tol),
-            calibration_ridge=float(ridge),
-            calibrate_once=bool(self.calibrate_once.isChecked()),
             epsilon=float(self.epsilon.text() or 1e-9),
         )
 
@@ -241,8 +228,8 @@ class MainWindow(QMainWindow):
             else:
                 return f"c{ci}\\partial {var}/\\partial c{ci}"
 
-        # Xi2 形式: Xi2_c1c2_f 等
-        m2 = re.match(r"Xi2_c(\d+)c(\d+)_([fg])", name)
+        # Xi2 形式: L2_c1c2_f 等
+        m2 = re.match(r"L2_c(\d+)c(\d+)_([fg])", name)
         if m2:
             i, j, fg = m2.groups()
             var = "\\ln f" if fg == "f" else "g"

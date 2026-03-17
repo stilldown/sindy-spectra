@@ -47,8 +47,6 @@ class DiscoveryService:
         rank_energy_threshold: float,
         sparsity_threshold: float,
         zero_anchor_tol: float,
-        calibration_ridge: float,
-        calibrate_once: bool,
         epsilon: float,
     ) -> DiscoveryConfig:
         """生成 ``DiscoveryConfig``，委托给 ``config.make_config``。"""
@@ -59,8 +57,6 @@ class DiscoveryService:
             rank_energy_threshold,
             sparsity_threshold,
             zero_anchor_tol,
-            calibration_ridge,
-            calibrate_once,
             epsilon,
         )
 

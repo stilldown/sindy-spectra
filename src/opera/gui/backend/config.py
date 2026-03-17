@@ -11,8 +11,6 @@ def make_config(
     rank_energy_threshold: float,
     sparsity_threshold: float,
     zero_anchor_tol: float,
-    calibration_ridge: float,
-    calibrate_once: bool,
     epsilon: float,
 ) -> DiscoveryConfig:
     """根据界面参数构造一个 ``DiscoveryConfig`` 对象。
@@ -25,10 +23,7 @@ def make_config(
         k_value=k_value,
         k_max=k_max,
         rank_energy_threshold=rank_energy_threshold,
-        max_components=k_value,
         sparsity_threshold=sparsity_threshold,
         zero_anchor_tol=zero_anchor_tol,
-        calibrate_pure_spectra_once=calibrate_once,
-        calibration_ridge=calibration_ridge,
         matrix=MatrixConfig(**mat_cfg),
     )

@@ -1,3 +1,3 @@
-from .complex_sparse import nullspace_sparse_vectors
+"""OPERA Discovery 回归工具包（占位）。"""
 
-__all__ = ["nullspace_sparse_vectors"]
+__all__: list = []
