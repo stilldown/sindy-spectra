@@ -451,3 +451,332 @@ class TestNonUniformGrid:
         assert "L1_c1_f" in lib
         assert "L1_c2_f" in lib
         assert np.all(np.isfinite(lib["L1_c1_f"]))
+
+
+# ---------------------------------------------------------------------------
+# 7. 退化策略：纤维采样模式（build_fiber_euler_library / run_fiber_discovery）
+# ---------------------------------------------------------------------------
+
+from opera.discovery.tensor_utils import (
+    build_fiber_euler_library,
+    approximate_tensor_from_fibers,
+    run_fiber_discovery,
+)
+
+
+def _beer_lambert_fibers(alphas, n_per_fiber=5, n_wl=40):
+    """d 个浓度变量，每个变量一条 1D Beer-Lambert 纤维。
+
+    模型：D(c_j, ω) = exp(alphas[j] * c_j) * P(ω)（其他维度固定在 0）
+    """
+    d = len(alphas)
+    wl = np.linspace(400.0, 700.0, n_wl)
+    P_spec = np.exp(-2 * np.linspace(0, 1, n_wl)) + 0.5
+    fibers = []
+    c_axes = []
+    for j in range(d):
+        cj = np.linspace(0.0, 1.2, n_per_fiber)
+        fj = np.exp(alphas[j] * cj[:, None]) * P_spec[None, :]
+        fibers.append(fj)
+        c_axes.append(cj)
+    return fibers, c_axes, wl
+
+
+class TestBuildFiberEulerLibrary:
+    """测试 build_fiber_euler_library 的正确性。"""
+
+    def test_output_structure_1d(self):
+        """1 条纤维：库应含 ln_f, g, L1_c1_f, Xi2_c1c1_f 等键。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([2.0], n_per_fiber=5)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, flibs, basis, A, w = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+        assert "ln_f" in lib
+        assert "L1_c1_f" in lib
+        assert "Xi2_c1c1_f" in lib
+        assert lib["L1_c1_f"].shape == (5, 1)
+
+    def test_output_structure_3d(self):
+        """3 条纤维：库应包含 c1/c2/c3 的对角算子，无非对角项。"""
+        d = 3
+        alphas = [1.0, 1.5, 2.0]
+        fibers, c_axes, wl = _beer_lambert_fibers(alphas, n_per_fiber=5)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, flibs, basis, A, w = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+        # 对角项存在
+        for j in range(1, d + 1):
+            assert f"L1_c{j}_f" in lib
+            assert f"Xi2_c{j}c{j}_f" in lib
+        # 非对角项不存在
+        assert "Xi2_c1c2_f" not in lib
+        assert "Xi2_c1c3_f" not in lib
+
+    def test_n_total_matches_sum(self):
+        """展平库行数应等于 Σn_j。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5, 2.0], n_per_fiber=6)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, _, _, A, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+        N_total = sum(len(ax) for ax in c_axes)
+        assert lib["ln_f"].shape[0] == N_total
+        assert A.shape[0] == N_total
+
+    def test_fiber_library_shape(self):
+        """每条纤维库的形状应为 (n_j, K)。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0], n_per_fiber=4)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=2)
+        _, flibs, _, _, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+        assert len(flibs) == 2
+        for j, flib in enumerate(flibs):
+            n_j = len(c_axes[j])
+            for key, val in flib.items():
+                assert val.shape == (n_j, 2), f"flibs[{j}][{key}] 形状应为 ({n_j},2)"
+
+    def test_off_axis_operators_are_zero(self):
+        """纤维 j 对应的行，其他维度 k≠j 的算子应精确为零。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0], n_per_fiber=5)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, _, _, _, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+        n0 = len(c_axes[0])
+        n1 = len(c_axes[1])
+        # 纤维 0 的行（索引 0..n0-1）：c2 的算子为零
+        np.testing.assert_array_equal(
+            lib["L1_c2_f"][:n0],
+            np.zeros((n0, 1)),
+            err_msg="纤维 0 的行中 L1_c2_f 应为零"
+        )
+        # 纤维 1 的行（索引 n0..n0+n1-1）：c1 的算子为零
+        np.testing.assert_array_equal(
+            lib["L1_c1_f"][n0:n0 + n1],
+            np.zeros((n1, 1)),
+            err_msg="纤维 1 的行中 L1_c1_f 应为零"
+        )
+
+    def test_1d_fiber_consistent_with_full_tensor(self):
+        """单条纤维的算子应与全张量路径（1D）一致。"""
+        alpha = 1.8
+        n_c, n_wl = 6, 32
+        fibers_1d, c_axes_1d, wl = _beer_lambert_fibers([alpha], n_per_fiber=n_c, n_wl=n_wl)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+
+        lib_f, _, basis_f, A_f, _ = build_fiber_euler_library(
+            fibers_1d, c_axes_1d, wl, cfg
+        )
+
+        # 全张量路径（1D 等价）
+        st = fibers_1d[0]   # (n_c, n_wl)
+        lib_t, _, basis_t, _, _, _, _ = build_tensor_euler_library(
+            st, c_axes_1d, wl, cfg
+        )
+
+        # 两路径结果应一致（允许 SVD 符号翻转，取绝对值比较或对比两路径的一致符号）
+        # 由于 SVD 符号可能不同，比较 |L1_c1_f| 应该一致
+        np.testing.assert_allclose(
+            np.abs(lib_f["L1_c1_f"]), np.abs(lib_t["L1_c1_f"]), atol=1e-8,
+            err_msg="1D 纤维路径 L1_c1_f 绝对值应与全张量路径一致"
+        )
+
+    def test_zero_anchor_at_c0(self):
+        """零参考点（c=0）处 L_j = 0（c 缩放正确）。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([2.0, 1.5], n_per_fiber=5)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, flibs, _, _, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+        n0 = len(c_axes[0])
+        # 纤维 0 的第一行（c1=0）：L1_c1_f 应为零
+        assert abs(float(lib["L1_c1_f"][0, 0])) < 1e-10
+        # 纤维 1 的第一行（c2=0，在全局行号 n0 处）：L1_c2_f 应为零
+        assert abs(float(lib["L1_c2_f"][n0, 0])) < 1e-10
+
+    def test_high_dimensional_fiber_linear_scaling(self):
+        """高维（d=10）纤维采样：总样本数为 Σn_j（线性），而非 Πn_j（指数）。"""
+        d = 10
+        n_per_fiber = 4
+        alphas = np.linspace(0.5, 2.0, d).tolist()
+        fibers, c_axes, wl = _beer_lambert_fibers(alphas, n_per_fiber=n_per_fiber, n_wl=24)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, flibs, _, A, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+
+        N_fiber = n_per_fiber * d            # 线性：40
+        N_grid  = n_per_fiber ** d           # 指数：4^10 = 1,048,576
+        assert A.shape[0] == N_fiber
+        assert N_fiber < N_grid
+        # 库中有所有维度的对角算子
+        for j in range(1, d + 1):
+            assert f"L1_c{j}_f" in lib
+        assert np.all(np.isfinite(lib["ln_f"]))
+
+    def test_different_n_per_fiber(self):
+        """不同纤维可以有不同的点数。"""
+        n_wl = 32
+        P_spec = np.exp(-np.linspace(0, 2, n_wl)) + 0.3
+        wl = np.linspace(400, 700, n_wl)
+        c1 = np.linspace(0, 1, 3)
+        c2 = np.linspace(0, 1, 7)
+        fibers = [
+            np.exp(c1[:, None]) * P_spec,
+            np.exp(0.5 * c2[:, None]) * P_spec,
+        ]
+        c_axes = [c1, c2]
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        lib, flibs, _, A, _ = build_fiber_euler_library(fibers, c_axes, wl, cfg)
+        assert A.shape[0] == 3 + 7    # 3 + 7 = 10
+        assert flibs[0]["ln_f"].shape == (3, 1)
+        assert flibs[1]["ln_f"].shape == (7, 1)
+
+    def test_no_zero_anchor_raises(self):
+        """纤维中若某维度没有零参考点，run_fiber_discovery 应报错。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0])
+        c_axes_bad = [c_axes[0] + 0.5, c_axes[1]]   # 第一条纤维无零参考
+        with pytest.raises(ValueError, match="0"):
+            run_fiber_discovery(fibers, c_axes_bad, wl)
+
+
+class TestApproximateTensorFromFibers:
+    """测试加法近似张量重构。"""
+
+    def test_output_shape_2d(self):
+        """2D 近似张量形状应为 (m1, m2, M)。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5], n_per_fiber=5)
+        target_c_axes = [np.linspace(0, 1, 4), np.linspace(0, 1, 6)]
+        approx = approximate_tensor_from_fibers(fibers, c_axes, target_c_axes)
+        assert approx.shape == (4, 6, len(wl))
+
+    def test_output_shape_3d(self):
+        """3D 近似张量形状应为 (m1, m2, m3, M)。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5, 2.0], n_per_fiber=4)
+        target_c_axes = [np.linspace(0, 1, 3)] * 3
+        approx = approximate_tensor_from_fibers(fibers, c_axes, target_c_axes)
+        assert approx.shape == (3, 3, 3, len(wl))
+
+    def test_reference_point_exact(self):
+        """零参考点（所有 c=0）处的近似值应等于测量参考光谱。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5], n_per_fiber=5)
+        target_c_axes = [np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.6, 1.2])]
+        approx = approximate_tensor_from_fibers(fibers, c_axes, target_c_axes)
+        # approx[0, 0, :] 对应 (c1=0, c2=0)，应等于参考光谱
+        D0_expected = fibers[0][0]   # 零参考（取纤维 0 的第一行）
+        np.testing.assert_allclose(approx[0, 0, :], D0_expected, atol=1e-10)
+
+    def test_additive_model_is_exact_for_beer_lambert(self):
+        """对加法 Beer-Lambert 模型，加法近似应精确成立（无交叉项）。"""
+        n_wl = 32
+        P_spec = np.exp(-np.linspace(0, 2, n_wl)) + 0.3
+        wl = np.linspace(400, 700, n_wl)
+        alpha1, alpha2 = 1.2, 0.8
+        c1 = np.linspace(0, 1, 5)
+        c2 = np.linspace(0, 1, 5)
+        fibers = [
+            np.exp(alpha1 * c1[:, None]) * P_spec,
+            np.exp(alpha2 * c2[:, None]) * P_spec,
+        ]
+        c_axes = [c1, c2]
+        target_c_axes = [np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.5, 1.0])]
+        approx = approximate_tensor_from_fibers(fibers, c_axes, target_c_axes)
+
+        # 真实值（精确加法模型）
+        ct1 = target_c_axes[0]
+        ct2 = target_c_axes[1]
+        c1g, c2g = np.meshgrid(ct1, ct2, indexing="ij")
+        D0 = P_spec   # exp(0) * P_spec = P_spec
+        D1_contrib = np.exp(alpha1 * c1g[..., None]) * P_spec - D0   # delta from fiber 1
+        D2_contrib = np.exp(alpha2 * c2g[..., None]) * P_spec - D0   # delta from fiber 2
+        true_additive = D0 + D1_contrib + D2_contrib
+
+        np.testing.assert_allclose(approx, true_additive, atol=1e-12,
+                                   err_msg="加法 Beer-Lambert 模型下加法近似应精确")
+
+    def test_same_axes_returns_identity(self):
+        """目标轴与纤维轴相同时，近似值应与原始纤维数据一致（1D 情形）。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.5], n_per_fiber=5)
+        approx = approximate_tensor_from_fibers(fibers, c_axes, c_axes)
+        # 1D 情形，approx 形状 (n, M)
+        np.testing.assert_allclose(approx, fibers[0], atol=1e-12)
+
+
+class TestRunFiberDiscovery:
+    """测试 run_fiber_discovery 端到端。"""
+
+    def test_1d_fiber_runs_without_error(self):
+        """1 条纤维端到端应无错误完成。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([2.0])
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        result = run_fiber_discovery(fibers, c_axes, wl, cfg)
+        assert result.Xi.ndim == 3
+        assert result.S_real.shape[1] == 1
+
+    def test_3d_fiber_runs_without_error(self):
+        """3 条纤维端到端应无错误完成。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5, 2.0])
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        result = run_fiber_discovery(fibers, c_axes, wl, cfg)
+        assert result.Xi.shape[2] == 1
+
+    def test_metadata_sampling_mode(self):
+        """metadata['sampling_mode'] 应为 'fiber'。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0])
+        result = run_fiber_discovery(fibers, c_axes, wl)
+        assert result.metadata["sampling_mode"] == "fiber"
+
+    def test_metadata_sample_count_linear(self):
+        """纤维模式：总样本数 = Σn_j（线性），远小于全网格 Πn_j（指数）。"""
+        d, n = 5, 4
+        alphas = [0.5 + 0.3 * j for j in range(d)]
+        fibers, c_axes, wl = _beer_lambert_fibers(alphas, n_per_fiber=n, n_wl=24)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        result = run_fiber_discovery(fibers, c_axes, wl, cfg)
+        assert result.metadata["n_total_samples"] == d * n
+        assert result.metadata["n_full_grid"] == n ** d
+        # 线性 << 指数
+        assert result.metadata["n_total_samples"] < result.metadata["n_full_grid"]
+
+    def test_output_shapes(self):
+        """S_real (M, K)，f_response (N_total, K)，Xi (1, J, K)。"""
+        n_wl = 32
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0], n_per_fiber=5, n_wl=n_wl)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        result = run_fiber_discovery(fibers, c_axes, wl, cfg)
+        N_total = 5 + 5
+        assert result.S_real.shape == (n_wl, 1)
+        assert result.f_response_eval.shape == (N_total, 1)
+        assert result.Xi.shape[2] == 1
+
+    def test_fiber_libraries_in_metadata(self):
+        """metadata 应包含 fiber_libraries，长度等于 d。"""
+        d = 3
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5, 2.0])
+        result = run_fiber_discovery(fibers, c_axes, wl)
+        flibs = result.metadata["fiber_libraries"]
+        assert len(flibs) == d
+        for j, flib in enumerate(flibs):
+            assert "ln_f" in flib
+            assert f"L1_c{j+1}_f" in flib
+
+    def test_operator_names_diagonal_only(self):
+        """算子名称中不应出现非对角 Ξ_{ij}（i≠j）。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 2.0])
+        result = run_fiber_discovery(fibers, c_axes, wl)
+        for name in result.operator_names:
+            assert "Xi2_c1c2" not in name, f"不应出现非对角算子 {name}"
+            assert "Xi2_c2c1" not in name, f"不应出现非对角算子 {name}"
+
+    def test_high_dim_fiber_discovery(self):
+        """高维（d=8）纤维发现应成功，体现退化策略的可扩展性。"""
+        d = 8
+        alphas = [0.5 + 0.2 * j for j in range(d)]
+        fibers, c_axes, wl = _beer_lambert_fibers(alphas, n_per_fiber=4, n_wl=20)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        result = run_fiber_discovery(fibers, c_axes, wl, cfg)
+        assert result.metadata["n_total_samples"] == d * 4       # 32
+        assert result.metadata["n_full_grid"] == 4 ** d          # 65536
+        assert np.all(np.isfinite(result.Xi))
+
+    def test_approximation_then_tensor_discovery(self):
+        """加法近似 → 全张量发现 的组合流程应无错误完成。"""
+        fibers, c_axes, wl = _beer_lambert_fibers([1.0, 1.5], n_per_fiber=5)
+        target_c_axes = [np.linspace(0, 1.2, 3), np.linspace(0, 1.2, 3)]
+        approx = approximate_tensor_from_fibers(fibers, c_axes, target_c_axes)
+        cfg = DiscoveryConfig(k_mode="fixed", k_value=1)
+        from opera.discovery.tensor_utils import run_tensor_discovery
+        result = run_tensor_discovery(approx, target_c_axes, wl, cfg)
+        assert result.metadata["grid_shape"] == (3, 3)
+        # 加法近似后全张量路径可计算非对角 Euler 算子（pretty_name 格式）
+        # pretty_name("Xi2_c1c2_f") == "c1c2d2_f/dc1dc2"
+        assert "c1c2d2_f/dc1dc2" in result.operator_names
