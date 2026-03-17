@@ -15,15 +15,86 @@
 - 发现结果：`DiscoveryResult`（见 `types.py`）包含 `f_response`, `S_real`, `Xi`, 诊断信息等。
   注：`g_shift`（光谱位移）已彻底移除，历史上始终为零无实际意义。
 
+## 物理约束原理：欧拉算子与隐式微分方程发现
+
+**核心理念**：算法本质是用 **微分方程（Euler 型 ODE/PDE）来约束光谱分解**，而非盲源分离后再拟合参数。
+
+### 1. 光谱模型
+
+频域观测数据分解为 K 个组分之和：
+
+```
+D̂(c, ω) ≈ Σ_k  A_k(c) · φ_k(ω)
+```
+
+其中每个组分的复数幅度满足：
+
+```
+A_k(c) = f_k(c) · exp(−i ω_k · g_k(c))
+```
+
+- `φ_k(ω)` — 第 k 个纯光谱（频域基向量，由 SVD 或伪逆确定）
+- `f_k(c) = exp(Re(ln A_k))` — 第 k 组分的**强度响应**（正实数）
+- `g_k(c) = −Im(ln A_k) / ω_k` — 第 k 组分的**相位斜率**（光谱位移）
+- `ω_k` — 模式 k 的特征频率（由 `spectral_basis @ diag(ω) @ spectral_basis†` 的对角元给出）
+
+### 2. Euler 算子库（微分方程候选项）
+
+对每个组分 k，构造以下算子（均为 `c` 方向的 Euler 型微分算子）：
+
+| 库条目 | 定义 | 含义 |
+|--------|------|------|
+| `ln_f` | `Re(ln A_k)` | 对数强度（零阶 Euler 项） |
+| `g` | `−Im(ln A_k) / ω_k` | 相位斜率（零阶） |
+| `L1_j_f` | `c_j · ∂(ln f_k)/∂c_j` | **一阶 Euler 算子**作用于 ln f |
+| `L1_j_g` | `c_j · ∂g_k/∂c_j` | 一阶 Euler 算子作用于 g |
+| `Xi2_ij_f` | `c_i c_j ∂²(ln f_k)/∂c_i∂c_j` (i≠j) 或 `c_i² ∂²(ln f_k)/∂c_i² + L1_i_f` (i=j) | **二阶 Euler 算子**（含一阶修正项） |
+| `Xi2_ij_g` | 同上，作用于 g | 二阶 Euler 算子作用于 g |
+| `ln_f^2`, `g^2` | 平方非线性项 | 非线性 Euler 项 |
+
+> **关键**：以上每个条目均是 `∂(ln f)/∂c`（或更高阶）的 Euler 缩放版本，它们共同构成一族"候选微分方程项"。
+
+### 3. SINDy-PI 零空间 = 隐式 ODE 发现
+
+算法通过 SVD 最小奇异向量找稀疏系数 `ξ`，使得：
+
+```
+Σ_j  ξ_j · Ω_j(ln f_k)  ≈  0     （f 方向隐式 ODE）
+Σ_j  ξ_j · Ω_j(g_k)     ≈  0     （g 方向隐式 ODE）
+```
+
+这等价于**发现约束光谱分解的隐式微分方程**——不同于盲源分离，这里的组分分解被"物理方程"约束，而不是任意自由分离。
+
+### 4. 可发现的物理模型示例
+
+| 物理模型 | f(c) 形式 | 被发现的 ODE | 方程意义 |
+|----------|-----------|-------------|---------|
+| Beer-Lambert 吸收 | `exp(−ε c)` | `L1_f − ln_f = 0` | `c ∂(ln f)/∂c = ln f` → f 关于 ln c 线性 |
+| Beer-Lambert（二阶验证） | `exp(−ε c)` | `Xi2_f − L1_f = 0` | `c² ∂²(ln f)/∂c² + c ∂(ln f)/∂c = c ∂(ln f)/∂c` → 即上式 |
+| 高斯型浓度响应 | `exp(−ε c²)` | `L1_f − 2·ln_f = 0` | `c ∂(ln f)/∂c = 2 ln f` → f 关于 c² 指数型 |
+| 幂次律 | `c^n` | `Xi2_f = 0` | `c² ∂²(ln f)/∂c² + c ∂(ln f)/∂c = 0` → Euler 方程，解为 c^n |
+| Langmuir/Hill（近似） | `K c/(1+K c)` | 含 `ln_f^2` 非线性项 | 超越方程，需高阶库项 |
+
+### 5. 为什么必须有零浓度锚点
+
+- 所有 Euler 算子在 `c_i = 0` 处自然为零：`L_i(c=0) = c_i · ∂(ln f)/∂c_i |_{c=0} = 0`
+- 零浓度样本（纯溶剂/空白）提供了**物理参考**（`f(0) = 1` → `ln f(0) = 0`）
+- 缺少零锚点会导致算子计算的相对意义丧失，无法确定绝对强度标定
+
+---
+
 ## 核心流程（`pipeline.run_discovery`）
-1. 预处理、算子矩阵生成（算子见 `pipeline_utils.py`、`operator.py`）。
-2. 三路管线选择：
-   - **默认（pure Euler）**：`construct_pure_library` → SVD谱基投影，`solve_nullspace`
-   - **伪逆（`use_inverse_operator=True`）**：`construct_inverse_library` → 伪逆算子，合并弱算子
-   - **弱形式+SVD（`use_weak_form=True`）**：`build_weak_form_library` → SVD投影分离组分后 IBP，无需数值微分
-3. `solve_nullspace` 提取 f/g 零空间系数，组装 `Xi`。
-4. IFFT 谱基 → `S_real`（纯谱），投影系数 A → `f_response_eval`。
-5. 诊断与输出封装为 `DiscoveryResult`。
+
+1. **输入验证 + 零锚点检测**（`validate_inputs`，`preprocess.py`）
+2. **FFT**：光谱矩阵去均值后做 `rfft` → 频域矩阵 `D̂(N, P)` + 频率轴 `ω`
+3. **数值微分**：在控制变量网格上计算 `∂D̂/∂c_j`、`∂²D̂/∂c_i∂c_j`（中心差分，要求等间距笛卡尔网格）
+4. **Euler 算子库构建**（三路可选）：
+   - **默认（SVD pure Euler）**：SVD 取前 K 个谱基 `Φ`，`A = D̂ @ Φ†`，在投影空间计算 α/β/L1/Xi2 → 库形状 `(N, K)`
+   - **伪逆（`use_inverse_operator=True`）**：`D̂ @ D̂†`（N×N 帽矩阵），算子在完整样本空间计算
+   - **弱形式（`use_weak_form=True`）**：IBP 把微分算子转移到多项式测试函数上，不需要数值微分 `dD̂/dc`
+   - **直接 Euler（`use_direct_euler=True`）**：用 `W=[1, −iω]` 伪逆在全频段同时拟合 f/g，K=1（全局方程）
+5. **SINDy-PI 零空间**（`solve_nullspace`）：对 f/g 分别做 SVD，取最小奇异向量 = 隐式 ODE 系数 `ξ`
+6. **组装输出**：`ξ` 填入 `Xi(1, J, K)`；`irfft(Φ)` → `S_real`（纯组分光谱）；封装为 `DiscoveryResult`
 
 ## 弱形式算子库（Weak-Form Operator Library）
 
@@ -65,10 +136,21 @@ out = run_discovery(spectra, factors, wavelengths, cfg)
 - `g_shift`（光谱位移）已从代码库中完全移除。该概念在历史实现中始终为零，且无实际估计路径，属于多余设计。
 - 如未来需要重新引入，应在 `pipeline.py` 中添加估计逻辑，并在 `DiscoveryResult` 和 `DiscoveryConfig` 中重新声明相关字段。
 
-## 算子库与符号发现
-- 基本算子：`1, c, f, f', c f, c f', f f'` 等（SINDy-PI 不会自动生成乘积，需显式加入）。
-- 目标：可拟合多项式、幂函数、指数、对数、Logistic/饱和型等；三角/更高阶需增加二阶导或特定算子。
-- 多变量：`c_i, c_i f, c_i f'_{c_i}, f f'_{c_i}, c_i c_j` 等；若需扩散/协同，考虑二阶混合偏导。
+## 算子库与微分方程约束
+
+代码中的算子库 **不是** 任意特征工程，而是一族 **Euler 型微分方程候选项**：
+
+```
+库中每列 = Euler 算子 Ω_j 作用于 ln_f_k（或 g_k）在所有样本点的取值
+零空间 ξ = 使 Σ ξ_j Ω_j = 0 的稀疏系数 = 隐式 ODE 的系数
+```
+
+**如何扩展算子库**：
+- 新增算子类型时，须确保它仍是 `ln_f` 或 `g` 的 Euler-型表达式（否则方程无物理意义）
+- 若需高阶 Euler 项（如 `c³ ∂³(ln f)/∂c³`），在 `pipeline_utils.py` / `operator.py` 中添加
+- 非线性项（如 `ln_f^2`）用于捕获超越 Euler 线性方程的物理行为（如 Langmuir/Hill）
+- 跨组分交叉项（如 `L1_f * L1_g`）目前未实现，若物理上 f 与 g 存在耦合可按需添加
+- 多变量控制下，非对角 `Xi2_c{i}c{j}` 算子捕获浓度间的交叉 Euler 偏导（对应混合偏微分方程项）
 
 ## GUI 提示
 - 入口：`src/opera/gui/main_window.py`。
@@ -95,10 +177,12 @@ out = run_discovery(spectra, factors, wavelengths, cfg)
 
 ---
 面向智能体的快捷心智模型：
-- 先看 `pipeline.run_discovery` 主流程，入口为三路管线（pure/inverse/weak_form）。
-- 算子库在 `pipeline_utils.py`（pure）和 `operator.py`（inverse/weak_form）中。
-- `g_shift` 已移除；如需位移特征须重新设计。
-- SINDy-PI 不会自动乘积算子，算子库要显式列出你想要的乘积/幂/导数。
+- **算法核心**：用 Euler 微分算子（L1, Xi2）构建 ODE 候选库，SINDy-PI 零空间发现约束光谱分解的隐式方程。
+- 先看 `pipeline.run_discovery` 主流程，入口为四路管线（pure/direct_euler/inverse/weak_form）。
+- `construct_pure_library`（默认路径）：SVD 分离组分 → 对每个投影组分 A_k 计算 α/β → Euler 算子库。
+- `build_direct_euler_library`（`use_direct_euler=True`）：全频段 W=[1,-iω] 拟合 f/g → 单方程（K=1）。
+- 算子库条目是 `ln_f` 或 `g` 的 Euler 型微分算子取值，**不是**任意特征。
+- `g_shift` 已移除；光谱位移由 `g_k(c)` 通过相位算子体现。
 
 ---
 
