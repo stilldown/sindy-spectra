@@ -314,7 +314,7 @@ def build_weak_form_library(
     library : dict[str, ndarray(M, N)]
         弱形式算子库，键名遵循 ``solve_nullspace`` 的 ``_f``/``_g`` 过滤约定：
 
-        * ``"wln_f"``, ``"wg"``       — 零阶项（⟨ln A, ψ_m⟩ 的实/虚部）
+        * ``"wln_f"``, ``"wln_g"``     — 零阶项（⟨ln A, ψ_m⟩ 的实/虚部）
         * ``"wL_{i}_f"``, ``"wL_{i}_g"`` — 第 i 个控制维的一阶弱 Euler 算子
     names : list[str], length M
         测试函数名称列表。
@@ -371,7 +371,7 @@ def build_weak_form_library(
     # -------------------------------------------------------------------
     w0 = Psi @ ln_A                                     # (M, N)
     library["wln_f"] = np.real(w0)
-    library["wg"]    = -np.imag(w0) / (omega_means[None, :] + 1e-9)
+    library["wln_g"] = -np.imag(w0) / (omega_means[None, :] + 1e-9)
 
     # -------------------------------------------------------------------
     # 一阶弱 Euler 算子 (IBP, 无需 dD_dc):

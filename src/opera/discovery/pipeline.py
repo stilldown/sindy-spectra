@@ -17,22 +17,29 @@
 
     ∂D̂/∂c_j  ,  ∂²D̂/(∂c_i∂c_j)   via 等间距中心差分
 
-**阶段 3：算子特征库 Θ ∈ ℝ^{N×J}**
+**阶段 3：算子特征库 Θ ∈ ℝ^{M×J}**
 
 三种可选路径（由 DiscoveryConfig 控制）：
 
 * 默认（``use_weak_form=False, use_inverse_operator=False``）：
-    SVD 谱基投影 → 按元素复对数 → Euler 算子展开
+    SVD 谱基投影 → 按元素复对数 → Euler 算子展开，再通过测试函数 Ψ 投影至 (M, K)
     （见 :func:`~opera.discovery.pipeline_utils.construct_pure_library`）
 
+* 直接 Euler（``use_direct_euler=True``）：
+    无 SVD 逐元素 Euler 算子，W(ω) 拟合分离 f/g，再通过 Ψ 投影至 (M, 1)
+    （见 :func:`~opera.discovery.pipeline_utils.build_direct_euler_library`）
+
 * 伪逆（``use_inverse_operator=True``）：
-    D†∂D 对角线截断 → 频域特征
+    D†∂D 对角线截断 → 频域特征（保持 (N, K) 强形式，不做 Ψ 投影）
     （见 :func:`~opera.discovery.operator.construct_inverse_library`）
 
 * 真弱形式（``use_weak_form=True``）：
     D̂ @ D† = N×N 方阵（帽矩阵，无需截断），组分数 K = N；
-    对 ln A 做 IBP 内积 ⟨L_i, ψ_m⟩ — 无需数值微分
+    对 ln A 做 IBP 内积 ⟨L_i, ψ_m⟩ — 无需数值微分，直接输出 (M, N)
     （见 :func:`~opera.discovery.operator.build_weak_form_library`）
+
+以弱形式算子库为准：除伪逆路径外，所有路径的算子库条目统一为 (M, K) 形状，
+其中 M = 测试函数数量，K = 谱组分数。行的语义为测试函数内积，而非样本点逐元素值。
 
 **阶段 4：SINDy-PI 零空间识别**
 
@@ -116,6 +123,7 @@ def run_discovery(
         # build_weak_form_library 内部做 pinv → A = D̂ @ D†（N×N 方阵） → ln A → IBP。
         # 组分数 K = N（样本数），由矩阵乘法自然确定；
         # k_eff 参数被 build_weak_form_library 接受但会触发 DeprecationWarning 并被忽略。
+        # 库条目形状：(M, N)，行 = 测试函数内积（弱形式原生格式）。
         from .operator import build_weak_form_library
         lib, _psi_names, _Psi, basis, A = build_weak_form_library(
             d_hat=d_hat,
@@ -127,6 +135,7 @@ def run_discovery(
     elif cfg.use_direct_euler:
         # 1.md 直接 Euler 算子路径：无 SVD，逐元素在全频域 D̂(c,ω) 上计算 Euler 算子，
         # 用 W(ω)=[1,−iω] 线性拟合分离 f/g，输出 K=1 全局物理方程。
+        # 原始库条目形状：(N, 1)；以下投影为 (M, 1) 与弱形式对齐。
         lib, basis, A, _w_means = build_direct_euler_library(
             d_hat=d_hat,
             dD_dc=dD_dc,
@@ -134,9 +143,16 @@ def run_discovery(
             omega=omega,
             c=c,
         )
+        # 以弱形式算子库为准：通过多项式测试函数 Ψ 将库条目从 (N, K) 投影至 (M, K)
+        from .operator import _build_polynomial_test_functions_with_grads
+        _Psi, _, _ = _build_polynomial_test_functions_with_grads(
+            c, degree=cfg.weak_form_test_degree
+        )
+        lib = {k: _Psi @ v for k, v in lib.items()}
 
     elif cfg.use_inverse_operator:
         # 伪逆路径：D†∂D 对角线截断，不做谱基投影
+        # 库条目包含复数弱算子，保持 (N, K) 强形式，暂不做 Ψ 投影。
         lib, basis, A, _w_means = construct_inverse_library(
             d_hat=d_hat,
             dD_dc=dD_dc,
@@ -156,6 +172,7 @@ def run_discovery(
 
     else:
         # 默认路径（推荐）：SVD 谱基 → 按元素复对数 → Euler 算子（含 c_i 缩放）
+        # 原始库条目形状：(N, K)；以下投影为 (M, K) 与弱形式对齐。
         lib, basis, A, _w_means = construct_pure_library(
             d_hat=d_hat,
             dD_dc=dD_dc,
@@ -164,6 +181,12 @@ def run_discovery(
             c=c,
             config=cfg,
         )
+        # 以弱形式算子库为准：通过多项式测试函数 Ψ 将库条目从 (N, K) 投影至 (M, K)
+        from .operator import _build_polynomial_test_functions_with_grads
+        _Psi, _, _ = _build_polynomial_test_functions_with_grads(
+            c, degree=cfg.weak_form_test_degree
+        )
+        lib = {k: _Psi @ v for k, v in lib.items()}
     t_lib = perf_counter()
 
     # ── 阶段 4：SINDy-PI 零空间识别 ─────────────────────────────────────────

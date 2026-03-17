@@ -153,13 +153,13 @@ class TestBuildWeakFormLibraryShapes:
         assert A.shape == (N, N)
 
     def test_library_keys_present(self):
-        """库中必须包含 wln_f, wg, wL_1_f, wL_1_g, wL_2_f, wL_2_g。"""
+        """库中必须包含 wln_f, wln_g, wL_1_f, wL_1_g, wL_2_f, wL_2_g。"""
         rng = np.random.default_rng(12)
         d_hat = rng.standard_normal((10, 12)) + 1j * rng.standard_normal((10, 12))
         c = rng.uniform(0.1, 2.0, (10, 2))
         omega = np.linspace(0, 1, 12)
         lib, _, _, _, _ = build_weak_form_library(d_hat, c, omega)
-        for key in ["wln_f", "wg", "wL_1_f", "wL_1_g", "wL_2_f", "wL_2_g"]:
+        for key in ["wln_f", "wln_g", "wL_1_f", "wL_1_g", "wL_2_f", "wL_2_g"]:
             assert key in lib, f"Missing key: {key}"
 
     def test_full_hat_matrix_no_truncation(self):
