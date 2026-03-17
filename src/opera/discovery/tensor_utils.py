@@ -434,9 +434,11 @@ def build_tensor_euler_library(
             library_tensor[f"L2_c{i+1}c{j+1}_g"] = -np.imag(val) / (omega_means + 1e-9)
 
     # ── 步骤 8：展平并转置 → (K, N) 算子种类×频点约定 ────────────────────────
-    # tensor_to_flat 产生 (N, K)；转置后为 (K, N) = 频点（谱组分）× 样本点（评估维）
+    # tensor_to_flat(val, n_leading=d) 展平 (*grid, K) → (N, K)（样本×组分）。
+    # 转置后得 (K, N) = （谱组分/频点）×（样本评估点），满足 solve_nullspace 期望的
+    # (K, R) 约定：axis-0 = 频点 k_eff 个谱组分，axis-1 = 每组分的 R 个评估值。
     library: dict[str, np.ndarray] = {
-        key: tensor_to_flat(val, n_leading=d).T
+        key: tensor_to_flat(val, n_leading=d).T   # (N, K) → (K, N)
         for key, val in library_tensor.items()
     }
     A_flat = A_tensor.reshape(N, K)
